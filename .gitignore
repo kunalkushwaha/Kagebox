@@ -1,0 +1,23 @@
+# ── secrets & credentials — NEVER commit ─────────────────────────────
+bridge/secrets.env
+*.key
+*.pem
+*.token
+
+# ── Hermes memory/state backups (private: tokens, keys, memory, DBs) ──
+hermes-state/
+
+# ── user deliverables / working files — never commit the workspace ──
+workspace/
+
+# ── local editor / tooling ───────────────────────────────────────────
+.claude/settings.local.json
+.DS_Store
+
+# ── audit log (records the paths the agent hit — keep private) ───────
+audit/
+
+# ── transient ────────────────────────────────────────────────────────
+*.log
+*.tmp
+*.swp

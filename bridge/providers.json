@@ -1,0 +1,44 @@
+{
+  "_comment": "Runtime AI-provider registry, read by BOTH the bridge gateway and hermesctl. To add any OpenAI-compatible AI API: add an entry here, put its key in bridge/secrets.env, restart the bridge (./hermesctl bridge start), then `./hermesctl backend <name>`. Keys stay on the HOST and are injected by the gateway; they never enter the sandbox. Fields: route_prefix (path on the bridge), upstream (real API base), auth_header/auth_scheme(bearer|raw)/auth_env (how the host key is injected), extra_headers (defaults, set only if the client didn't send them), bridge_path (what Hermes' base_url uses under the gateway), hermes_provider (Hermes provider name, usually 'custom'), model, context_length.",
+
+  "providers": {
+    "gemini": {
+      "route_prefix": "/gemini/",
+      "upstream": "https://generativelanguage.googleapis.com",
+      "auth_header": "authorization",
+      "auth_scheme": "bearer",
+      "auth_env": "GEMINI_API_KEY",
+      "extra_headers": {},
+      "bridge_path": "/gemini/v1beta/openai",
+      "hermes_provider": "custom",
+      "model": "gemini-flash-latest",
+      "context_length": 1048576
+    },
+
+    "openrouter": {
+      "route_prefix": "/openrouter/",
+      "upstream": "https://openrouter.ai/api",
+      "auth_header": "authorization",
+      "auth_scheme": "bearer",
+      "auth_env": "OPENROUTER_API_KEY",
+      "extra_headers": {},
+      "bridge_path": "/openrouter/v1",
+      "hermes_provider": "custom",
+      "model": "google/gemini-2.5-flash",
+      "context_length": 1000000
+    },
+
+    "anthropic": {
+      "route_prefix": "/anthropic/",
+      "upstream": "https://api.anthropic.com",
+      "auth_header": "x-api-key",
+      "auth_scheme": "raw",
+      "auth_env": "ANTHROPIC_API_KEY",
+      "extra_headers": { "anthropic-version": "2023-06-01" },
+      "bridge_path": "/anthropic",
+      "hermes_provider": "anthropic",
+      "model": "claude-sonnet-4-5",
+      "context_length": 200000
+    }
+  }
+}

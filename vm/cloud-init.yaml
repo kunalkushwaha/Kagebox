@@ -1,0 +1,16 @@
+#cloud-config
+# Minimal first-boot setup for the Hermes sandbox VM.
+# Heavy provisioning (installing Hermes Agent) is done afterwards via
+# `multipass exec` so progress is visible and controllable — see vm/provision.sh.
+package_update: true
+packages:
+  - curl
+  - ca-certificates
+  - git
+  - libatomic1   # required by Hermes-managed Node.js 26 (missing in minimal cloud image)
+  - cron         # auto-backup of Hermes memory/state to the host
+  - rsync        # incremental state backups
+  - nftables     # egress allowlist firewall (./hermesctl egress)
+runcmd:
+  - [ mkdir, -p, /home/ubuntu/workspace ]
+  - [ chown, "ubuntu:ubuntu", /home/ubuntu/workspace ]
