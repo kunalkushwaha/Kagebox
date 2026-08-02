@@ -2,6 +2,9 @@
 
 > **Run autonomous AI agents safely** — isolated microVM, host-side credentials, controllable egress, auditable.
 
+[![CI](https://github.com/kunalkushwaha/Kagebox/actions/workflows/ci.yml/badge.svg)](https://github.com/kunalkushwaha/Kagebox/actions/workflows/ci.yml)
+&nbsp;[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 [Hermes Agent](https://github.com/NousResearch/hermes-agent) executes arbitrary shell,
 edits files, and drives a browser — so **Kagebox** runs it inside a **KVM microVM**
 (its own kernel) that can't touch your host, reaching LLMs through a **bridge that keeps
@@ -59,6 +62,9 @@ echo 'GEMINI_API_KEY=...' >> bridge/secrets.env      # free key: aistudio.google
 | `./kagebox egress on` / `off` | network egress allowlist (containment) |
 | `./kagebox audit` | review the agent's API-call log |
 | `./kagebox backup` / `restore` | snapshot / restore Hermes memory to the host |
+| `./kagebox usage` | token & rough-cost usage per provider |
+| `./kagebox snapshot` / `snapshots` / `rollback` | VM point-in-time snapshots |
+| `./kagebox task "<prompt>"` | run a one-off task in a throwaway, egress-contained VM clone |
 
 ## Backends
 

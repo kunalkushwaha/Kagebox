@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Shell syntax (bash -n)
+        run: bash -n kagebox vm/*.sh host-gpu/*.sh
+
+      - name: Python syntax
+        run: python3 -m py_compile bridge/gateway.py evals/model_eval.py
+
+      - name: Validate providers.json
+        run: python3 -c "import json; json.load(open('bridge/providers.json'))"
+
+      - name: Validate cloud-init YAML
+        run: |
+          python3 - <<'PY'
+          import sys
+          try:
+              import yaml
+          except ImportError:
+              sys.exit(0)  # pyyaml absent on runner; cloud-init is trivial YAML, skip
+          yaml.safe_load(open('vm/cloud-init.yaml'))
+          print("cloud-init.yaml OK")
+          PY
+
+      - name: Validate architecture SVG
+        run: python3 -c "import xml.dom.minidom; xml.dom.minidom.parse('docs/architecture.svg'); print('SVG OK')"
+
+      - name: ShellCheck (informational)
+        continue-on-error: true
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck -S warning kagebox vm/*.sh host-gpu/*.sh

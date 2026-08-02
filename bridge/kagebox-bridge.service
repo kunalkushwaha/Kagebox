@@ -12,6 +12,7 @@ Environment=BRIDGE_PORT=18080
 Environment=BRIDGE_IFACE=mpqemubr0
 Environment=CLAUDE_BRIDGE_MODEL=sonnet
 Environment=BRIDGE_AUDIT_LOG=__KAGEBOX_DIR__/audit/bridge.jsonl
+Environment=BRIDGE_USAGE_LOG=__KAGEBOX_DIR__/audit/usage.jsonl
 ExecStart=/usr/bin/python3 __KAGEBOX_DIR__/bridge/gateway.py
 Restart=on-failure
 RestartSec=3

@@ -52,6 +52,60 @@ def audit(entry):
     except Exception:
         pass
 
+
+# --- token/cost usage tracking ----------------------------------------------
+USAGE_LOG = os.environ.get("BRIDGE_USAGE_LOG", "")
+
+
+def usage_log(route, model, pt, ct):
+    if not USAGE_LOG:
+        return
+    try:
+        d = os.path.dirname(USAGE_LOG)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with open(USAGE_LOG, "a") as f:
+            f.write(json.dumps({"ts": int(time.time()), "route": route, "model": model or "",
+                                "prompt_tokens": pt or 0, "completion_tokens": ct or 0}) + "\n")
+    except Exception:
+        pass
+
+
+def route_name(path):
+    for pref in ("/gemini/", "/anthropic/", "/openrouter/", "/openai/", "/claude/"):
+        if path.startswith(pref):
+            return pref.strip("/")
+    return "ollama"
+
+
+def extract_usage(tail, ctype):
+    """Best-effort (model, prompt_tokens, completion_tokens) from a response tail."""
+    s = tail.decode("utf-8", "ignore")
+    if "application/json" in (ctype or ""):
+        try:
+            j = json.loads(s)
+            u = j.get("usage") or {}
+            return j.get("model"), u.get("prompt_tokens"), u.get("completion_tokens")
+        except Exception:
+            pass
+    model = pt = ct = None  # SSE: scan data: lines for the chunk carrying usage
+    for line in s.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if not payload.startswith("{"):
+            continue
+        try:
+            j = json.loads(payload)
+        except Exception:
+            continue
+        if j.get("model"):
+            model = j["model"]
+        if j.get("usage"):
+            pt, ct = j["usage"].get("prompt_tokens"), j["usage"].get("completion_tokens")
+    return model, pt, ct
+
 # --- proxied routes ----------------------------------------------------------
 # (prefix, upstream_base, strip_prefix, injected_headers)
 # injected header values:
@@ -250,6 +304,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _relay(self, url, up):
         code = getattr(up, "status", getattr(up, "code", 200))
+        ctype = up.headers.get("Content-Type", "")
         self.send_response(code)
         for k, v in up.headers.items():
             if k.lower() in HOP:
@@ -257,6 +312,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(k, v)
         self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
+        tail = b""
         try:
             while True:
                 chunk = up.read(65536)
@@ -266,11 +322,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(chunk)
                 self.wfile.write(b"\r\n")
                 self.wfile.flush()
+                if USAGE_LOG:
+                    tail = (tail + chunk)[-16384:]   # keep the end (usage lives there)
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             return
         self._log(url, code)
+        if USAGE_LOG and self.path.endswith("/chat/completions"):
+            model, pt, ct = extract_usage(tail, ctype)
+            if pt or ct:
+                usage_log(route_name(self.path), model, pt, ct)
 
     # -- local claude -p endpoint --------------------------------------------
     def _claude(self):
@@ -305,6 +367,8 @@ class Handler(BaseHTTPRequestHandler):
         cid = f"chatcmpl-claude-{created}"
         used = f"claude-{model}"
         self._log(f"claude -p (model={model}, {len(prompt)} chars in)", 200)
+        _u = (_meta or {}).get("usage") or {}
+        usage_log("claude", used, _u.get("input_tokens"), _u.get("output_tokens"))
         if stream:
             return self._claude_sse(cid, created, used, text)
         return self._send_json({

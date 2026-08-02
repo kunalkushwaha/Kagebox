@@ -19,6 +19,9 @@
 #   ./kagebox restore     restore Hermes memory/state from the host backup
 #   ./kagebox egress ...  network egress allowlist for the VM (on|off|status)
 #   ./kagebox audit       review the sandbox's bridge API-call log
+#   ./kagebox usage       token/cost usage per provider (from the bridge)
+#   ./kagebox snapshot [name] · snapshots · rollback <name>   VM point-in-time snapshots
+#   ./kagebox task "<prompt>"  run a one-off task in a throwaway, egress-contained clone
 #   ./kagebox destroy     delete the VM and stop the bridge (near-zero residue)
 set -euo pipefail
 
@@ -352,9 +355,84 @@ INTRO
   msg "Message your bot on Telegram. Manage it with: ./kagebox gateway {status|restart|stop|run}"
 }
 
+cmd_snapshot() {
+  vm_exists || die "no VM"
+  local name="${1:-}" running=0
+  multipass info "$VM_NAME" 2>/dev/null | grep -q "Running" && running=1
+  [ "$running" = 1 ] && { msg "stopping VM to snapshot (multipass needs it stopped)..."; multipass stop "$VM_NAME"; }
+  if [ -n "$name" ]; then multipass snapshot "$VM_NAME" --name "$name"; else multipass snapshot "$VM_NAME"; fi
+  if [ "$running" = 1 ]; then multipass start "$VM_NAME"; ensure_mount; bridge_start >/dev/null 2>&1; fi
+  msg "snapshot saved. list: ./kagebox snapshots"
+}
+cmd_snapshots() { multipass list --snapshots 2>/dev/null || multipass info "$VM_NAME" --snapshots 2>/dev/null; }
+cmd_rollback() {
+  vm_exists || die "no VM"
+  local snap="${1:-}"; [ -n "$snap" ] || die "usage: ./kagebox rollback <snapshot>   (see: ./kagebox snapshots)"
+  read -rp "Restore '$VM_NAME' to snapshot '$snap'? Current disk state is LOST. [y/N] " a
+  [ "${a:-n}" = y ] || { echo aborted; return 0; }
+  multipass stop "$VM_NAME" 2>/dev/null || true
+  multipass restore "${VM_NAME}.${snap}" --destructive
+  multipass start "$VM_NAME"; ensure_mount; bridge_start >/dev/null 2>&1
+  msg "rolled back to '$snap'."
+}
+
+cmd_usage() {
+  local f="$HERE/audit/usage.jsonl"
+  [ -f "$f" ] || { echo "no usage logged yet at $f (make a cloud/claude call first)"; return 0; }
+  python3 - "$f" <<'PY'
+import sys, json, collections
+# rough USD per 1M tokens (input, output) — APPROXIMATE, edit freely. Local ollama = free.
+PRICES = {"gemini": (0.075, 0.30), "openrouter": (1.0, 3.0),
+          "anthropic": (3.0, 15.0), "claude": (3.0, 15.0), "ollama": (0.0, 0.0)}
+agg = collections.defaultdict(lambda: [0, 0, 0])
+for line in open(sys.argv[1]):
+    try: e = json.loads(line)
+    except Exception: continue
+    k = (e.get("route", "?"), e.get("model", "?"))
+    agg[k][0] += e.get("prompt_tokens", 0); agg[k][1] += e.get("completion_tokens", 0); agg[k][2] += 1
+print("%-11s %-26s %6s %10s %10s %8s" % ("route", "model", "calls", "in_tok", "out_tok", "~USD"))
+ti = to = tc = 0
+for (route, model), (i, o, c) in sorted(agg.items()):
+    pin, pout = PRICES.get(route, (0, 0)); cost = i/1e6*pin + o/1e6*pout
+    ti += i; to += o; tc += cost
+    print("%-11s %-26s %6d %10d %10d %8.3f" % (route, model[:26], c, i, o, cost))
+print("-" * 74)
+print("%-11s %-26s %6s %10d %10d %8.3f" % ("TOTAL", "", "", ti, to, tc))
+print("(prices approximate — edit PRICES in ./kagebox; streamed calls without usage aren't counted)")
+PY
+}
+
+cmd_task() {
+  vm_exists || die "run ./kagebox setup first (need a provisioned VM to clone)"
+  local prompt="${*:-}"; [ -n "$prompt" ] || die "usage: ./kagebox task \"<prompt>\""
+  local clone="${VM_NAME}-task"
+  multipass delete --purge "$clone" 2>/dev/null || true
+  local running=0; multipass info "$VM_NAME" 2>/dev/null | grep -q "Running" && running=1
+  [ "$running" = 1 ] && { msg "stopping $VM_NAME briefly (clone needs it stopped)..."; multipass stop "$VM_NAME"; }
+  msg "cloning $VM_NAME -> $clone (throwaway)..."
+  multipass clone "$VM_NAME" --name "$clone" || die "clone failed (needs multipass >= 1.15)"
+  if [ "$running" = 1 ]; then multipass start "$VM_NAME" >/dev/null 2>&1; ensure_mount; bridge_start >/dev/null 2>&1; fi
+  multipass start "$clone"
+  [ -n "${SHARE_DIR:-}" ] && multipass mount "$HERE/$SHARE_DIR" "$clone:/home/ubuntu/workspace" 2>/dev/null || true
+  # contain the throwaway: egress locked to bridge + allowlist only
+  multipass transfer "$HERE/vm/egress-apply.sh" "$clone:/home/ubuntu/egress-apply.sh" 2>/dev/null || true
+  multipass transfer "$HERE/vm/egress-allowlist.txt" "$clone:/home/ubuntu/egress-allowlist.txt" 2>/dev/null || true
+  multipass exec "$clone" -- bash /home/ubuntu/egress-apply.sh on >/dev/null 2>&1 || true
+  printf '%s' "$prompt" | multipass exec "$clone" -- bash -c 'cat > ~/task.txt'
+  msg "running task in $clone (egress-contained; output -> workspace/)..."
+  multipass exec "$clone" -- bash -lc 'cd ~/workspace 2>/dev/null; export XDG_RUNTIME_DIR=/run/user/$(id -u); hermes -z "$(cat ~/task.txt)" --yolo' 2>&1 | tail -25
+  msg "destroying throwaway $clone."
+  multipass delete --purge "$clone"
+}
+
 case "${1:-}" in
   setup) cmd_setup ;;
   doctor) cmd_doctor ;;
+  snapshot) shift; cmd_snapshot "$@" ;;
+  snapshots) cmd_snapshots ;;
+  rollback) shift; cmd_rollback "$@" ;;
+  usage) cmd_usage ;;
+  task) shift; cmd_task "$@" ;;
   providers|backends) cmd_providers ;;
   telegram) cmd_telegram ;;
   gateway) shift; cmd_gateway "$@" ;;
