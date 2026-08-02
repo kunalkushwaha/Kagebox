@@ -23,6 +23,7 @@
 #   ./kagebox snapshot [name] · snapshots · rollback <name>   VM point-in-time snapshots
 #   ./kagebox task "<prompt>"  run a one-off task in a throwaway, egress-contained clone
 #   ./kagebox destroy     delete the VM and stop the bridge (near-zero residue)
+#   ./kagebox help        show this command list
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -457,6 +458,6 @@ case "${1:-}" in
       *) echo "usage: kagebox bridge {start|stop|status|log|install}" ;;
     esac ;;
   ""|help|-h|--help)
-    awk 'NR>1 && /^#/ {sub(/^# ?/,""); print} NR>1 && !/^#/ {exit}' "$HERE/kagebox" ;;
+    awk 'NR>1 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$HERE/kagebox" ;;
   *) die "unknown command '$1' (try: ./kagebox help)" ;;
 esac
