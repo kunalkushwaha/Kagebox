@@ -13,20 +13,9 @@ are one command to switch, and the agent's memory survives a VM crash.
 
 ## Architecture
 
-```
-  YOUR HOST                                        SANDBOX  (KVM microVM, own kernel)
-  ┌───────────────────────────────┐               ┌──────────────────────────────┐
-  │ Ollama :11434 (local models)  │               │ Hermes Agent + headless      │
-  │                               │               │ Chromium                     │
-  │ bridge gateway (your user)    │◀──────────────│ base_url -> bridge routes     │
-  │  binds VM-only IP :18080      │   bridge      │                              │
-  │  /v1        -> Ollama         │  (NAT, or     │ tools · files · browser      │
-  │  /claude    -> host claude -p │   egress-     │                              │
-  │  /gemini /anthropic /...      │   allowlisted)│ ~/.hermes  memory (backed up │
-  │  keys injected here, host-side│               │            to host)           │
-  └───────────────────────────────┘               │ only workspace/ shared       │
-     keys never enter the VM                       └──────────────────────────────┘
-```
+<p align="center">
+  <img src="docs/architecture.svg" alt="Kagebox architecture: a host-side bridge connects to an isolated KVM microVM" width="840">
+</p>
 
 The **bridge** is the only channel from sandbox to host. Keys live in
 `bridge/secrets.env` (host, git-ignored) and are injected into requests — they never
