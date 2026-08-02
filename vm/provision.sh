@@ -2,7 +2,7 @@
 # Runs INSIDE the sandbox VM as user `ubuntu` (invoked by `multipass exec`).
 # Installs Hermes Agent and points it at host Ollama through the bridge.
 #
-# Env (passed in by hermesctl):
+# Env (passed in by kagebox):
 #   BRIDGE_PORT     port the host gateway listens on            (default 18080)
 #   HERMES_MODEL    model name Hermes should use                (default hermes-ctx)
 #   HERMES_NUM_CTX  context length to declare to Hermes         (default 65536)
@@ -26,7 +26,7 @@ for i in $(seq 1 30); do
   sleep 2
 done
 if [ "$ok" != 1 ]; then
-  echo "!! Bridge not reachable at ${BASE}. Start it on the host: ./hermesctl bridge start" >&2
+  echo "!! Bridge not reachable at ${BASE}. Start it on the host: ./kagebox bridge start" >&2
   exit 1
 fi
 echo "   bridge OK: $(curl -fsS "${BASE}/models" | head -c 120)..."

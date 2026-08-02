@@ -24,12 +24,12 @@ bound the blast radius.
 | **Host kernel / processes** | Hardware-virtualized VM, not a shared-kernel container | An escape needs a hypervisor breakout, not a container escape. |
 | **Credentials / API keys** | Kept on the **host**, injected by the bridge gateway | LLM/API keys (Gemini, Claude, …) never enter the sandbox; a compromised VM can't read them. |
 | **Your LAN** | Bridge binds the VM-only network IP; Ollama stays on loopback | Neither the bridge nor Ollama is exposed to other machines. |
-| **Network egress** *(optional)* | nftables allowlist in the VM (`./hermesctl egress on`) | With it enabled, the agent can only reach the bridge + allowlisted domains — no data exfiltration or C2. **Off by default.** |
+| **Network egress** *(optional)* | nftables allowlist in the VM (`./kagebox egress on`) | With it enabled, the agent can only reach the bridge + allowlisted domains — no data exfiltration or C2. **Off by default.** |
 | **Auditability** | Bridge logs every API call; agent activity is recorded | You can review what the agent did. |
 
 ## What is NOT protected (know these)
 
-- **Network egress is OPEN by default.** Until you run `./hermesctl egress on`,
+- **Network egress is OPEN by default.** Until you run `./kagebox egress on`,
   the VM has normal internet access, so a prompt-injected agent could exfiltrate
   the contents of `workspace/` or contact an external server. Enable the egress
   allowlist for untrusted workloads.
@@ -49,10 +49,10 @@ bound the blast radius.
 
 ## Hardening checklist
 
-- [ ] `./hermesctl egress on` for any untrusted / web-facing task.
+- [ ] `./kagebox egress on` for any untrusted / web-facing task.
 - [ ] Keep secrets in `bridge/secrets.env` (host, git-ignored) — never in the VM or `workspace/`.
 - [ ] Set a messaging **allowlist** (`TELEGRAM_ALLOWED_USERS`) so only you can drive the bot.
-- [ ] Review the audit log (`./hermesctl audit`) after unattended runs.
+- [ ] Review the audit log (`./kagebox audit`) after unattended runs.
 - [ ] Keep host + `multipass` + `ollama` patched.
 
 ## Reporting a vulnerability

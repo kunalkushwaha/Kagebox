@@ -1,12 +1,12 @@
 # Egress allowlist — domains the sandboxed agent may reach when egress is ON
-# (`./hermesctl egress on`). One host per line. The host bridge (for LLM/API
+# (`./kagebox egress on`). One host per line. The host bridge (for LLM/API
 # calls) and DNS are ALWAYS allowed; list only EXTERNAL sites here.
 #
 # With this file empty, "egress on" is maximally strict: the agent can talk to
 # the bridge (so cloud/local models still work) but reach nothing else on the
 # internet — ideal for running untrusted input with zero exfiltration risk.
 #
-# Add sites the agent legitimately needs, then: ./hermesctl egress on
+# Add sites the agent legitimately needs, then: ./kagebox egress on
 # (IPs are re-resolved every 15 min, so CDNs/rotating IPs keep working.)
 #
 # --- examples (uncomment what you trust) ---

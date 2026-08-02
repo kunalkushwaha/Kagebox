@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Hermes sandbox bridge gateway
+Kagebox bridge gateway
 =============================
 Runs on the HOST as your normal user. Binds ONLY to the multipass bridge IP
 (the private host<->VM network) so the sandbox VM can reach *allowlisted*
@@ -198,7 +198,7 @@ def run_claude(prompt, model, timeout):
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "hermes-bridge/1.1"
+    server_version = "kagebox-bridge/1.1"
 
     # -- dispatch -------------------------------------------------------------
     def _dispatch(self):

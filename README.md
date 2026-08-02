@@ -36,15 +36,15 @@ enter the VM. Providers are a runtime registry (`bridge/providers.json`).
 
 - Linux host with **KVM** (`/dev/kvm`), **[multipass](https://multipass.run)**, and
   **[Ollama](https://ollama.com)** (for local models).
-- Run `./hermesctl doctor` to check everything at once.
+- Run `./kagebox doctor` to check everything at once.
 
 ## Quickstart
 
 ```bash
 git clone https://github.com/kunalkushwaha/Kagebox.git && cd Kagebox
-./hermesctl doctor          # verify host prerequisites
-./hermesctl setup           # build the VM, bridge, and install Hermes (~10 min)
-./hermesctl shell           # enter the sandbox, then run:  hermes
+./kagebox doctor          # verify host prerequisites
+./kagebox setup           # build the VM, bridge, and install Hermes (~10 min)
+./kagebox shell           # enter the sandbox, then run:  hermes
 ```
 
 Use a cloud brain for heavy research (key stays host-side):
@@ -52,24 +52,24 @@ Use a cloud brain for heavy research (key stays host-side):
 ```bash
 cp bridge/secrets.env.example bridge/secrets.env
 echo 'GEMINI_API_KEY=...' >> bridge/secrets.env      # free key: aistudio.google.com
-./hermesctl bridge start
-./hermesctl backend gemini
+./kagebox bridge start
+./kagebox backend gemini
 ```
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `./hermesctl doctor` | preflight-check the host |
-| `./hermesctl setup` / `destroy` | build / tear down the sandbox |
-| `./hermesctl up` / `down` / `status` | start / stop / inspect |
-| `./hermesctl shell` | shell into the VM (then run `hermes`) |
-| `./hermesctl backend <name>` | switch model: `ollama` · `claude` · `gemini` · … |
-| `./hermesctl providers` | list backends + cloud providers |
-| `./hermesctl telegram` | set up a Telegram bot to chat with Hermes |
-| `./hermesctl egress on` / `off` | network egress allowlist (containment) |
-| `./hermesctl audit` | review the agent's API-call log |
-| `./hermesctl backup` / `restore` | snapshot / restore Hermes memory to the host |
+| `./kagebox doctor` | preflight-check the host |
+| `./kagebox setup` / `destroy` | build / tear down the sandbox |
+| `./kagebox up` / `down` / `status` | start / stop / inspect |
+| `./kagebox shell` | shell into the VM (then run `hermes`) |
+| `./kagebox backend <name>` | switch model: `ollama` · `claude` · `gemini` · … |
+| `./kagebox providers` | list backends + cloud providers |
+| `./kagebox telegram` | set up a Telegram bot to chat with Hermes |
+| `./kagebox egress on` / `off` | network egress allowlist (containment) |
+| `./kagebox audit` | review the agent's API-call log |
+| `./kagebox backup` / `restore` | snapshot / restore Hermes memory to the host |
 
 ## Backends
 
@@ -92,7 +92,7 @@ echo 'GEMINI_API_KEY=...' >> bridge/secrets.env      # free key: aistudio.google
 This is a containment tool for untrusted agent behavior. **[SECURITY.md](SECURITY.md)**
 documents the full threat model — what's isolated (host FS, kernel, credentials) and
 what isn't (egress is open until you enable the allowlist). For untrusted work:
-`./hermesctl egress on`.
+`./kagebox egress on`.
 
 ## Contributing
 

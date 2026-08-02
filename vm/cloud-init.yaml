@@ -10,7 +10,7 @@ packages:
   - libatomic1   # required by Hermes-managed Node.js 26 (missing in minimal cloud image)
   - cron         # auto-backup of Hermes memory/state to the host
   - rsync        # incremental state backups
-  - nftables     # egress allowlist firewall (./hermesctl egress)
+  - nftables     # egress allowlist firewall (./kagebox egress)
 runcmd:
   - [ mkdir, -p, /home/ubuntu/workspace ]
   - [ chown, "ubuntu:ubuntu", /home/ubuntu/workspace ]

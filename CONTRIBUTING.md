@@ -16,12 +16,12 @@ scripts around multipass, Ollama, and the Hermes agent. No build step.
 ## Dev workflow
 
 ```bash
-./hermesctl doctor      # check your host prerequisites
-./hermesctl setup       # build the sandbox
+./kagebox doctor      # check your host prerequisites
+./kagebox setup       # build the sandbox
 # ...make changes...
-bash -n hermesctl vm/*.sh                 # shell syntax
+bash -n kagebox vm/*.sh                 # shell syntax
 python3 -m py_compile bridge/gateway.py   # python syntax
-shellcheck hermesctl vm/*.sh              # if you have shellcheck
+shellcheck kagebox vm/*.sh              # if you have shellcheck
 python3 evals/model_eval.py <model>       # agentic capability tests
 ```
 

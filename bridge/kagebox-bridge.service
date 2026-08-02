@@ -1,18 +1,18 @@
 [Unit]
-Description=Hermes sandbox bridge gateway (host->VM allowlisted proxy)
-Documentation=file:%h/work/hermes-sandbox/README.md
+Description=Kagebox bridge gateway (host->VM allowlisted proxy)
+Documentation=file:__KAGEBOX_DIR__/README.md
 After=network-online.target
 
 [Service]
 Type=simple
 # Optional host-held secrets (e.g. ANTHROPIC_API_KEY=...). The leading '-' means
 # "ok if the file is absent". These never enter the sandbox VM.
-EnvironmentFile=-%h/work/hermes-sandbox/bridge/secrets.env
+EnvironmentFile=-__KAGEBOX_DIR__/bridge/secrets.env
 Environment=BRIDGE_PORT=18080
 Environment=BRIDGE_IFACE=mpqemubr0
 Environment=CLAUDE_BRIDGE_MODEL=sonnet
-Environment=BRIDGE_AUDIT_LOG=%h/work/hermes-sandbox/audit/bridge.jsonl
-ExecStart=/usr/bin/python3 %h/work/hermes-sandbox/bridge/gateway.py
+Environment=BRIDGE_AUDIT_LOG=__KAGEBOX_DIR__/audit/bridge.jsonl
+ExecStart=/usr/bin/python3 __KAGEBOX_DIR__/bridge/gateway.py
 Restart=on-failure
 RestartSec=3
 
