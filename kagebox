@@ -266,7 +266,7 @@ cmd_doctor() {
   pass()  { printf '  \033[0;32m[ok]\033[0m   %s\n' "$1"; ok=$((ok+1)); }
   warnf() { printf '  \033[0;33m[warn]\033[0m %s\n' "$1"; warn=$((warn+1)); }
   failf() { printf '  \033[0;31m[fail]\033[0m %s\n' "$1"; fail=$((fail+1)); }
-  echo "Preflight — hermes-sandbox host checks:"
+  echo "Preflight — Kagebox host checks:"
   [ -e /dev/kvm ] && pass "KVM: /dev/kvm present" || failf "KVM: /dev/kvm missing (hardware virtualization required)"
   command -v multipass >/dev/null 2>&1 && pass "multipass: $(multipass version 2>/dev/null | head -1)" || failf "multipass not installed  (sudo snap install multipass)"
   command -v python3 >/dev/null 2>&1 && pass "python3 present (bridge dependency)" || failf "python3 missing"

@@ -39,6 +39,11 @@ git clone https://github.com/kunalkushwaha/Kagebox.git && cd Kagebox
 ./kagebox shell           # enter the sandbox, then run:  hermes
 ```
 
+<p align="center">
+  <img src="docs/doctor.gif" alt="./kagebox doctor — host preflight checks" width="520"><br><br>
+  <img src="docs/setup.gif" alt="./kagebox setup — building the sandbox" width="520">
+</p>
+
 Use a cloud brain for heavy research (key stays host-side):
 
 ```bash
