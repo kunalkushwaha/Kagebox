@@ -4,10 +4,15 @@
 #
 # With this file empty, "egress on" is maximally strict: the agent can talk to
 # the bridge (so cloud/local models still work) but reach nothing else on the
-# internet — ideal for running untrusted input with zero exfiltration risk.
+# internet — the tightest posture for running untrusted input. It blocks bulk
+# exfiltration and direct C2, but NOT everything: the guest can still reach the
+# bridge gateway (by design) and the host's DNS resolver, so DNS tunnelling and
+# provider-proxied bytes remain possible low-bandwidth channels (see SECURITY.md).
 #
 # Add sites the agent legitimately needs, then: ./kagebox egress on
-# (IPs are re-resolved every 15 min, so CDNs/rotating IPs keep working.)
+# Entries are resolved to IPs and re-resolved every ~10 min on the host, so
+# rotating IPs keep working — but CDN-fronted hosts share IPs with unrelated
+# sites, so allowlisting one effectively allows others on the same front end.
 #
 # --- examples (uncomment what you trust) ---
 # api.telegram.org

@@ -17,7 +17,8 @@
 #   ./kagebox gateway ... manage the messaging gateway (status|start|stop|restart|run)
 #   ./kagebox backup      snapshot Hermes memory/state to the host (survives VM loss)
 #   ./kagebox restore     restore Hermes memory/state from the host backup
-#   ./kagebox egress ...  network egress allowlist for the VM (on|off|status)
+#   ./kagebox egress ...  host-enforced egress allowlist for the VM (on|off|status|refresh)
+#   ./kagebox verify      assert the sandbox boundary from inside the VM (fail-closed)
 #   ./kagebox audit       review the sandbox's bridge API-call log
 #   ./kagebox usage       token/cost usage per provider (from the bridge)
 #   ./kagebox snapshot [name] · snapshots · rollback <name>   VM point-in-time snapshots
@@ -199,13 +200,79 @@ vm_claude_setup() {
 
 # ---------------------------------------------------------------- verify ---
 verify() {
-  vm_exists || die "no VM"
-  msg "Verifying sandbox -> bridge -> Ollama..."
-  multipass exec "$VM_NAME" -- bash -lc '
-    GW=$(ip route | awk "/^default/{print \$3; exit}")
-    echo "  host bridge: ${GW}:'"$BRIDGE_PORT"'"
-    curl -fsS --max-time 5 "http://${GW}:'"$BRIDGE_PORT"'/api/version" && echo "  <- Ollama reachable from sandbox" || echo "  <- FAILED to reach Ollama"
-    echo -n "  hermes binary: "; (command -v hermes || echo "not found")'
+  vm_exists || die "no VM (run ./kagebox setup)"
+  multipass info "$VM_NAME" 2>/dev/null | grep -q Running || { msg "starting $VM_NAME..."; multipass start "$VM_NAME"; ensure_mount; bridge_start >/dev/null 2>&1; }
+  msg "Verifying the sandbox boundary from INSIDE the VM (every control here fails open, so we assert, not assume)..."
+  # Runs entirely in the guest. Core invariants FAIL the run if broken; egress
+  # posture is probed and reported (open is a valid config until you contain it).
+  multipass exec "$VM_NAME" -- env KBOX_PORT="$BRIDGE_PORT" bash -s <<'GUEST'
+set -u
+export PATH="$HOME/.local/bin:$PATH"   # non-login shell: include where hermes installs
+PORT="${KBOX_PORT:-18080}"
+GW=$(ip route | awk '/^default/{print $3; exit}')
+B="http://$GW:$PORT"
+ok=0; fail=0; info=0
+pass(){ printf '  \033[0;32m[ok]\033[0m   %s\n' "$1"; ok=$((ok+1)); }
+bad(){  printf '  \033[0;31m[FAIL]\033[0m %s\n' "$1"; fail=$((fail+1)); }
+note(){ printf '  \033[0;33m[info]\033[0m %s\n' "$1"; info=$((info+1)); }
+
+# 1. sandbox -> bridge -> Ollama path works
+code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 6 "$B/api/version")
+[ "$code" = 200 ] && pass "bridge reachable ($B -> Ollama /api/version = 200)" \
+                   || bad "bridge NOT reachable ($B/api/version = $code)"
+
+# 2. the bridge refuses ALL Ollama model-management endpoints (Batch A)
+admin_bad=""
+for ep in delete pull push create copy; do
+  c=$(curl -s -o /dev/null -w '%{http_code}' --max-time 6 -X POST -d '{}' "$B/api/$ep")
+  [ "$c" = 403 ] || admin_bad="$admin_bad /api/$ep=$c"
+done
+[ -z "$admin_bad" ] && pass "admin endpoints blocked at the bridge (delete/pull/push/create/copy = 403)" \
+                    || bad "admin endpoint(s) NOT blocked:$admin_bad (want 403)"
+
+# 3. raw Ollama not directly reachable from the guest (loopback-only on host).
+#    Fail CLOSED: use the known-open bridge port as a positive control for the
+#    /dev/tcp probe method — if the control can't connect, the probe is broken
+#    and we report FAIL, never a silent pass.
+probe(){ timeout 3 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null; }
+if [ -z "$GW" ]; then bad "no default route in guest — cannot probe the boundary"
+elif ! probe "$GW" "$PORT"; then bad "boundary probe is broken (can't reach known-open bridge $GW:$PORT) — raw-Ollama check inconclusive, treated as FAIL"
+elif probe "$GW" 11434; then bad "raw Ollama reachable at $GW:11434 — should be bridge-only"
+else pass "raw Ollama not directly reachable ($GW:11434 refused)"; fi
+
+# 4. no host LLM credentials leaked into the guest environment (name- OR value-based)
+if env | grep -qiE '(_API_KEY|_AUTH_TOKEN)=.|=(sk-ant-|sk-|aiza)'; then
+  bad "a host API key/token appears in the guest environment"
+else pass "no host LLM API keys/tokens in the guest environment"; fi
+
+# 5. no host auth artefacts leaked into the guest
+hits=$(ls -d "$HOME"/.claude.json "$HOME"/.claude/.credentials.json "$HOME"/.config/claude \
+              "$HOME"/.netrc "$HOME"/.aws/credentials 2>/dev/null | tr '\n' ' ')
+[ -z "$hits" ] && pass "no host auth artefacts (claude/netrc/aws) in the guest" \
+               || bad "host auth artefact(s) present in the guest: $hits"
+
+# 6. egress posture — probe a non-allowlisted destination BY IP (bypasses DNS).
+#    Distinguish "blocked" (curl rc 7 refused / 28 timeout) from "probe broke".
+if ! command -v curl >/dev/null 2>&1; then note "egress posture unknown (curl missing)"
+else
+  out=$(curl -s -o /dev/null -w '%{http_code}' --max-time 6 https://1.1.1.1 2>/dev/null); rc=$?
+  if [ "$rc" = 0 ] && [ "$out" != 000 ]; then
+    note "egress OPEN — direct internet reachable (1.1.1.1 = $out); run './kagebox egress on' for untrusted work"
+  elif [ "$rc" = 7 ] || [ "$rc" = 28 ]; then
+    pass "egress CONTAINED — direct internet (1.1.1.1) blocked (curl rc=$rc)"
+  else note "egress posture inconclusive (curl rc=$rc)"; fi
+fi
+
+# 7. DNS still resolves (needed in both postures)
+getent hosts example.com >/dev/null 2>&1 && pass "DNS resolves (example.com)" \
+                                          || note "DNS did not resolve example.com"
+
+# 8. the agent itself is installed
+command -v hermes >/dev/null 2>&1 && pass "hermes binary present" || note "hermes not found in PATH"
+
+printf '\n  Summary: %d ok · %d info · %d FAIL\n' "$ok" "$info" "$fail"
+[ "$fail" -eq 0 ]
+GUEST
 }
 
 # ----------------------------------------------------------------- flows ---
@@ -241,11 +308,14 @@ cmd_destroy() {
 }
 
 cmd_egress() {
-  vm_exists || die "no VM"
+  # Host-enforced egress (nftables on the host, keyed on the bridge iface) so a
+  # root agent in the VM cannot remove it. Needs sudo; works whether or not the
+  # VM is running. The in-guest vm/egress-apply.sh remains only as defence-in-depth.
   local action="${1:-status}"
-  multipass transfer "$HERE/vm/egress-apply.sh"      "$VM_NAME:/home/ubuntu/egress-apply.sh" 2>/dev/null || true
-  multipass transfer "$HERE/vm/egress-allowlist.txt" "$VM_NAME:/home/ubuntu/egress-allowlist.txt" 2>/dev/null || true
-  multipass exec "$VM_NAME" -- bash /home/ubuntu/egress-apply.sh "$action"
+  [ "$action" = status ] || msg "egress $action — host-enforced on '$BRIDGE_IFACE' (needs sudo; the guest cannot alter this)"
+  sudo BRIDGE_IFACE="$BRIDGE_IFACE" BRIDGE_PORT="$BRIDGE_PORT" \
+       EGRESS_ALLOWFILE="$HERE/vm/egress-allowlist.txt" \
+       bash "$HERE/bridge/host-egress.sh" "$action"
 }
 
 cmd_audit() {
@@ -415,7 +485,13 @@ cmd_task() {
   if [ "$running" = 1 ]; then multipass start "$VM_NAME" >/dev/null 2>&1; ensure_mount; bridge_start >/dev/null 2>&1; fi
   multipass start "$clone"
   [ -n "${SHARE_DIR:-}" ] && multipass mount "$HERE/$SHARE_DIR" "$clone:/home/ubuntu/workspace" 2>/dev/null || true
-  # contain the throwaway: egress locked to bridge + allowlist only
+  # Contain the throwaway with the HOST-enforced allowlist — the clone shares the
+  # bridge, so the host table covers it, and its root agent cannot remove it
+  # (the in-guest egress-apply.sh below is only defence-in-depth). Host egress is
+  # interface-wide, so this contains every VM on the bridge for the run; it is
+  # left ON afterwards (the safe direction) — reopen with `./kagebox egress off`.
+  msg "containing the throwaway (host-enforced egress; needs sudo)..."
+  cmd_egress on >/dev/null || warn "host egress could not be enabled — the throwaway is only guest-contained (removable by its root agent)"
   multipass transfer "$HERE/vm/egress-apply.sh" "$clone:/home/ubuntu/egress-apply.sh" 2>/dev/null || true
   multipass transfer "$HERE/vm/egress-allowlist.txt" "$clone:/home/ubuntu/egress-allowlist.txt" 2>/dev/null || true
   multipass exec "$clone" -- bash /home/ubuntu/egress-apply.sh on >/dev/null 2>&1 || true
@@ -424,6 +500,7 @@ cmd_task() {
   multipass exec "$clone" -- bash -lc 'cd ~/workspace 2>/dev/null; export XDG_RUNTIME_DIR=/run/user/$(id -u); hermes -z "$(cat ~/task.txt)" --yolo' 2>&1 | tail -25
   msg "destroying throwaway $clone."
   multipass delete --purge "$clone"
+  warn "host egress was left ON (host-enforced; contains ALL VMs on '$BRIDGE_IFACE', including $VM_NAME). Reopen with: ./kagebox egress off"
 }
 
 case "${1:-}" in

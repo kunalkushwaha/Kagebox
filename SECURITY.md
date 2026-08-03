@@ -24,7 +24,7 @@ bound the blast radius.
 | **Host kernel / processes** | Hardware-virtualized VM, not a shared-kernel container | An escape needs a hypervisor breakout, not a container escape. |
 | **Credentials / API keys** | Kept on the **host**, injected by the bridge gateway | LLM/API keys (Gemini, Claude, …) never enter the sandbox; a compromised VM can't read them. |
 | **Your LAN** | Bridge binds the VM-only network IP; Ollama stays on loopback | Neither the bridge nor Ollama is exposed to other machines. |
-| **Network egress** *(optional)* | nftables allowlist in the VM (`./kagebox egress on`) | With it enabled, the agent can only reach the bridge + allowlisted domains — no data exfiltration or C2. **Off by default.** |
+| **Network egress** *(optional)* | **Host-side** nftables allowlist keyed on the VM bridge interface (`./kagebox egress on`) | Enforced on the *host*, so a root agent in the VM cannot switch it off. With it on, the agent reaches only the bridge + allowlisted IPs; **bulk exfiltration and direct C2 are blocked.** Low-bandwidth residual channels remain (DNS, CDN-fronted entries) — see below. **Off by default.** |
 | **Auditability** | Bridge logs every API call; agent activity is recorded | You can review what the agent did. |
 
 ## What is NOT protected (know these)
@@ -32,10 +32,29 @@ bound the blast radius.
 - **Network egress is OPEN by default.** Until you run `./kagebox egress on`,
   the VM has normal internet access, so a prompt-injected agent could exfiltrate
   the contents of `workspace/` or contact an external server. Enable the egress
-  allowlist for untrusted workloads.
+  allowlist for untrusted workloads. When on, it is **enforced on the host**
+  (nftables on the bridge interface), so the agent — even with root in the VM —
+  cannot remove it, and IPv6 egress is dropped so it can't slip around the
+  (IPv4) allowlist.
+- **The egress allowlist is IP-based, and two residual channels survive it.**
+  (1) *DNS:* the guest resolves through the host, so an agent can encode data into
+  subdomain lookups (`<data>.attacker.example`) — low bandwidth, but enough for a
+  key. (2) *CDN fronting:* an allowlisted hostname resolves to shared CDN IPs that
+  also serve unrelated sites, so allowlisting `api.anthropic.com` effectively
+  permits anything else on those front-end IPs. The allowlist stops bulk
+  exfiltration and direct C2, not these; name-based (SNI/proxy) filtering is the
+  roadmap.
 - **The shared `workspace/` folder is a two-way door.** Anything you put there is
   readable by the agent; anything it writes there lands on your host. Don't put
   secrets in `workspace/`.
+- **`workspace/` is also a code-execution path onto your host — through you.** The
+  agent writes deliverables there and you open them. Agent-authored files can carry
+  code that runs on the *host* the moment you act on them: a `Makefile` or script
+  you run to "check the output", `.git/hooks/*` if it's a git repo,
+  `.vscode/tasks.json` / `.envrc` / devcontainer files an editor auto-runs, or a
+  poisoned `package.json` / `requirements.txt` / lockfile you install. The VM
+  boundary holds; you are the transport. **Review diffs before running, installing,
+  or opening `workspace/` contents in an auto-executing editor.**
 - **Bot tokens live in the VM.** A messaging bot (Telegram/Discord) token must sit
   where the bot runs — inside the VM. It's a *scoped* bot credential (not your
   account), and the VM is isolated, but a VM compromise exposes that token.

@@ -64,7 +64,8 @@ echo 'GEMINI_API_KEY=...' >> bridge/secrets.env      # free key: aistudio.google
 | `./kagebox backend <name>` | switch model: `ollama` · `claude` · `gemini` · … |
 | `./kagebox providers` | list backends + cloud providers |
 | `./kagebox telegram` | set up a Telegram bot to chat with Hermes |
-| `./kagebox egress on` / `off` | network egress allowlist (containment) |
+| `./kagebox egress on` / `off` | **host-enforced** network egress allowlist (containment) |
+| `./kagebox verify` | assert the sandbox boundary from inside the VM (fail-closed) |
 | `./kagebox audit` | review the agent's API-call log |
 | `./kagebox backup` / `restore` | snapshot / restore Hermes memory to the host |
 | `./kagebox usage` | token & rough-cost usage per provider |
