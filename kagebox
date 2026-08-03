@@ -282,11 +282,19 @@ cmd_setup() {
   vm_launch
   bridge_start
   vm_provision
+  # Contained by default: provisioning above needed open internet; now lock the
+  # finished sandbox down to the (host-enforced) allowlist before the closing
+  # verify, so that check reflects the final posture. The allowlist starts empty
+  # = bridge-only, the tightest posture; add domains you trust to
+  # vm/egress-allowlist.txt. Non-fatal — the sandbox is usable either way.
+  msg "enabling host-enforced egress — contained by default (needs sudo)..."
+  cmd_egress on || warn "egress not enabled (sudo declined?) — run ./kagebox egress on when ready"
   verify
   cat <<EOF
 
-$(printf '\033[1;32m✓ Sandbox ready.\033[0m')
+$(printf '\033[1;32m✓ Sandbox ready.\033[0m')  (egress: contained — allowlist in vm/egress-allowlist.txt)
   Enter it:     ./kagebox shell     (then type: hermes)
+  Verify:       ./kagebox verify     ·  Open egress: ./kagebox egress off
   Status:       ./kagebox status
   Tear it down: ./kagebox destroy
 EOF
@@ -348,6 +356,10 @@ cmd_doctor() {
   elif journalctl -u ollama --no-pager 2>/dev/null | grep -q "dropping integrated GPU"; then warnf "Ollama is dropping the integrated GPU (set OLLAMA_IGPU_ENABLE=1 to use it)"; fi
   if vm_exists; then pass "VM '$VM_NAME': $(multipass info "$VM_NAME" 2>/dev/null | awk '/State/{print $2}')"; else warnf "VM '$VM_NAME' not built yet (./kagebox setup)"; fi
   [ "$(systemctl --user is-active kagebox-bridge.service 2>/dev/null)" = active ] && pass "bridge service active" || warnf "bridge not running (./kagebox bridge start)"
+  # Egress posture — surface it so "contained" is never silently assumed. The
+  # cron marker is host-enforced and world-readable, so no sudo is needed here.
+  if [ -f /etc/cron.d/kagebox-egress ]; then pass "egress: contained (host-enforced allowlist ON) — verify with ./kagebox verify"
+  else warnf "egress: OPEN — the VM has full internet; run ./kagebox egress on for untrusted work"; fi
   if [ -f "$HERE/${STATE_DIR:-hermes-state}/.last-backup" ]; then pass "memory backup present ($(cat "$HERE/${STATE_DIR:-hermes-state}/.last-backup"))"; else warnf "no memory backup yet (auto every 10 min once running)"; fi
   echo; printf 'Summary: %d ok · %d warn · %d fail\n' "$ok" "$warn" "$fail"
   [ "$fail" -eq 0 ]

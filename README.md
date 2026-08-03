@@ -12,7 +12,8 @@ your API keys on the host**. Local models (Ollama) or cloud brains (Gemini, Clau
 are one command to switch, and the agent's memory survives a VM crash.
 
 > ⚠️ It runs an autonomous, promptable agent. Read **[SECURITY.md](SECURITY.md)** —
-> especially "network egress is open by default" — before trusting it with sensitive work.
+> egress is **contained by default** (host-enforced allowlist); `./kagebox egress off`
+> opens it — before trusting it with sensitive work.
 
 ## Architecture
 
@@ -91,9 +92,10 @@ echo 'GEMINI_API_KEY=...' >> bridge/secrets.env      # free key: aistudio.google
 ## Security
 
 This is a containment tool for untrusted agent behavior. **[SECURITY.md](SECURITY.md)**
-documents the full threat model — what's isolated (host FS, kernel, credentials) and
-what isn't (egress is open until you enable the allowlist). For untrusted work:
-`./kagebox egress on`.
+documents the full threat model — what's isolated (host FS, kernel, credentials, and
+network egress, which is **host-enforced and contained by default**) and what isn't
+(DNS + CDN-fronted allowlist entries are residual channels; `workspace/` is a two-way
+door). Confirm the boundary from inside the VM with `./kagebox verify`.
 
 ## Contributing
 

@@ -24,18 +24,21 @@ bound the blast radius.
 | **Host kernel / processes** | Hardware-virtualized VM, not a shared-kernel container | An escape needs a hypervisor breakout, not a container escape. |
 | **Credentials / API keys** | Kept on the **host**, injected by the bridge gateway | LLM/API keys (Gemini, Claude, …) never enter the sandbox; a compromised VM can't read them. |
 | **Your LAN** | Bridge binds the VM-only network IP; Ollama stays on loopback | Neither the bridge nor Ollama is exposed to other machines. |
-| **Network egress** *(optional)* | **Host-side** nftables allowlist keyed on the VM bridge interface (`./kagebox egress on`) | Enforced on the *host*, so a root agent in the VM cannot switch it off. With it on, the agent reaches only the bridge + allowlisted IPs; **bulk exfiltration and direct C2 are blocked.** Low-bandwidth residual channels remain (DNS, CDN-fronted entries) — see below. **Off by default.** |
+| **Network egress** *(optional)* | **Host-side** nftables allowlist keyed on the VM bridge interface (`./kagebox egress on`) | Enforced on the *host*, so a root agent in the VM cannot switch it off. With it on, the agent reaches only the bridge + allowlisted IPs; **bulk exfiltration and direct C2 are blocked.** Low-bandwidth residual channels remain (DNS, CDN-fronted entries) — see below. **Enabled by `./kagebox setup`; `./kagebox egress off` to open it.** |
 | **Auditability** | Bridge logs every API call; agent activity is recorded | You can review what the agent did. |
 
 ## What is NOT protected (know these)
 
-- **Network egress is OPEN by default.** Until you run `./kagebox egress on`,
-  the VM has normal internet access, so a prompt-injected agent could exfiltrate
-  the contents of `workspace/` or contact an external server. Enable the egress
-  allowlist for untrusted workloads. When on, it is **enforced on the host**
-  (nftables on the bridge interface), so the agent — even with root in the VM —
-  cannot remove it, and IPv6 egress is dropped so it can't slip around the
-  (IPv4) allowlist.
+- **Network egress is CONTAINED by default** (since `./kagebox setup` enables
+  the allowlist). The allowlist starts empty — bridge-only — which is the
+  tightest posture; add domains you trust to `vm/egress-allowlist.txt`. It is
+  **enforced on the host** (nftables on the bridge interface), so the agent —
+  even with root in the VM — cannot remove it, and IPv6 egress is dropped so it
+  can't slip around the (IPv4) allowlist. Run `./kagebox egress off` to open the
+  VM's internet, and `./kagebox verify` to confirm the posture from inside the
+  VM. **After a host reboot** the runtime table is gone until the 10-minute
+  refresh cron re-asserts it (or you run `./kagebox egress on`); `./kagebox
+  doctor` shows the current posture.
 - **The egress allowlist is IP-based, and two residual channels survive it.**
   (1) *DNS:* the guest resolves through the host, so an agent can encode data into
   subdomain lookups (`<data>.attacker.example`) — low bandwidth, but enough for a
