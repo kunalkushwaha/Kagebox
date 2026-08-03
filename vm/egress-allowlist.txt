@@ -1,6 +1,7 @@
-# Egress allowlist — domains the sandboxed agent may reach when egress is ON
-# (`./kagebox egress on`). One host per line. The host bridge (for LLM/API
-# calls) and DNS are ALWAYS allowed; list only EXTERNAL sites here.
+# Egress allowlist — domains the sandboxed agent may reach when egress is ON.
+# Egress is enabled by default at `./kagebox setup` (contained by default), so
+# add the EXTERNAL sites you trust here, one host per line. The host bridge (for
+# LLM/API calls) and DNS are ALWAYS allowed. Open the VM fully: ./kagebox egress off
 #
 # With this file empty, "egress on" is maximally strict: the agent can talk to
 # the bridge (so cloud/local models still work) but reach nothing else on the
