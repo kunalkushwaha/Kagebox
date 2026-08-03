@@ -18,6 +18,7 @@
 #   ./kagebox backup      snapshot Hermes memory/state to the host (survives VM loss)
 #   ./kagebox restore     restore Hermes memory/state from the host backup
 #   ./kagebox egress ...  host-enforced egress allowlist for the VM (on|off|status|refresh)
+#   ./kagebox verify      assert the sandbox boundary from inside the VM (fail-closed)
 #   ./kagebox audit       review the sandbox's bridge API-call log
 #   ./kagebox usage       token/cost usage per provider (from the bridge)
 #   ./kagebox snapshot [name] · snapshots · rollback <name>   VM point-in-time snapshots
