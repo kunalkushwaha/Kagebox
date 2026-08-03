@@ -21,3 +21,7 @@ audit/
 *.log
 *.tmp
 *.swp
+
+# Python bytecode
+__pycache__/
+*.pyc
