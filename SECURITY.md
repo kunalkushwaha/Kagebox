@@ -22,7 +22,9 @@ bound the blast radius.
 |---|---|---|
 | **Host filesystem** | Runs in a KVM microVM (own kernel) with only `workspace/` mounted | The agent cannot read or write your host files, except the one shared folder. |
 | **Host kernel / processes** | Hardware-virtualized VM, not a shared-kernel container | An escape needs a hypervisor breakout, not a container escape. |
-| **Credentials / API keys** | Kept on the **host**, injected by the bridge gateway | LLM/API keys (Gemini, Claude, …) never enter the sandbox; a compromised VM can't read them. |
+| **Credentials / API keys** | Kept on the **host**, injected by the bridge gateway; credential headers sent *by the guest* are dropped, not relayed | LLM/API keys (Gemini, Claude, …) never enter the sandbox; a compromised VM can't read them, and can't smuggle its own key to an upstream either. |
+| **Host model store** | The bridge's default (Ollama) route is an **allowlist**: inference and read-only endpoints only | The sandbox cannot `pull`, `create`, `delete`, `copy` or `push` host models — closing both a tampering path and an egress path (`pull`/`create` make the *host* fetch from an arbitrary registry). |
+| **Host `claude` CLI** (`/claude` route) | Runs `claude -p` with tools and MCP suppressed, in an empty dir; the route **refuses to serve** unless those flags are verified present, and is rate-capped | The sandbox gets Claude's text, not the ability to act on your host through your own credentials — and a CLI change that dropped the flags takes the route offline instead of silently enabling tools. |
 | **Your LAN** | Bridge binds the VM-only network IP; Ollama stays on loopback | Neither the bridge nor Ollama is exposed to other machines. |
 | **Network egress** *(optional)* | **Host-side** nftables allowlist keyed on the VM bridge interface (`./kagebox egress on`) | Enforced on the *host*, so a root agent in the VM cannot switch it off. With it on, the agent reaches only the bridge + allowlisted IPs; **bulk exfiltration and direct C2 are blocked.** Low-bandwidth residual channels remain (DNS, CDN-fronted entries) — see below. **Enabled by `./kagebox setup`; `./kagebox egress off` to open it.** |
 | **Auditability** | Bridge logs every API call; agent activity is recorded | You can review what the agent did. |
@@ -47,6 +49,11 @@ bound the blast radius.
   permits anything else on those front-end IPs. The allowlist stops bulk
   exfiltration and direct C2, not these; name-based (SNI/proxy) filtering is the
   roadmap.
+- **`./kagebox task` refuses to run uncontained.** The throwaway-clone mode is
+  the one most likely to be pointed at untrusted input, so if the host egress
+  table cannot be loaded (sudo declined, for instance) the clone is destroyed
+  and the task is not run. Set `KAGEBOX_TASK_UNCONTAINED=1` to override — only
+  when you trust the prompt and everything it will read.
 - **The shared `workspace/` folder is a two-way door.** Anything you put there is
   readable by the agent; anything it writes there lands on your host. Don't put
   secrets in `workspace/`.
@@ -58,6 +65,14 @@ bound the blast radius.
   poisoned `package.json` / `requirements.txt` / lockfile you install. The VM
   boundary holds; you are the transport. **Review diffs before running, installing,
   or opening `workspace/` contents in an auto-executing editor.**
+- **The `/claude` route spends your quota, on the guest's instructions.** The
+  prompts come from the sandbox; the host pays for them. Tools and MCP servers
+  are suppressed, so this is a cost and a prompt-privacy exposure rather than an
+  action channel. It is capped at 60 calls/hour — tune with
+  `CLAUDE_BRIDGE_MAX_PER_HOUR` (`0` disables the cap). If the bridge cannot
+  confirm your `claude` build still accepts the tool/MCP-suppression flags it
+  disables the route rather than guess; `CLAUDE_BRIDGE_ALLOW_UNVERIFIED=1`
+  overrides that, and should only be set after reading `run_claude()`.
 - **Bot tokens live in the VM.** A messaging bot (Telegram/Discord) token must sit
   where the bot runs — inside the VM. It's a *scoped* bot credential (not your
   account), and the VM is isolated, but a VM compromise exposes that token.
@@ -72,6 +87,9 @@ bound the blast radius.
 ## Hardening checklist
 
 - [ ] `./kagebox egress on` for any untrusted / web-facing task.
+- [ ] `./kagebox verify` afterwards — assert the boundary from inside the VM
+      rather than assuming a control loaded. Every control here fails open, so
+      one that silently did not apply looks exactly like one that is working.
 - [ ] Keep secrets in `bridge/secrets.env` (host, git-ignored) — never in the VM or `workspace/`.
 - [ ] Set a messaging **allowlist** (`TELEGRAM_ALLOWED_USERS`) so only you can drive the bot.
 - [ ] Review the audit log (`./kagebox audit`) after unattended runs.

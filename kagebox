@@ -234,7 +234,10 @@ done
 #    Fail CLOSED: use the known-open bridge port as a positive control for the
 #    /dev/tcp probe method — if the control can't connect, the probe is broken
 #    and we report FAIL, never a silent pass.
-probe(){ timeout 3 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null; }
+# $3 = timeout seconds. Bulk probes below use a short one: a DROP verdict never
+# answers, so every blocked port costs the full timeout, and these are all on
+# the local bridge where an open port answers in milliseconds.
+probe(){ timeout "${3:-3}" bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null; }
 if [ -z "$GW" ]; then bad "no default route in guest — cannot probe the boundary"
 elif ! probe "$GW" "$PORT"; then bad "boundary probe is broken (can't reach known-open bridge $GW:$PORT) — raw-Ollama check inconclusive, treated as FAIL"
 elif probe "$GW" 11434; then bad "raw Ollama reachable at $GW:11434 — should be bridge-only"
@@ -253,21 +256,62 @@ hits=$(ls -d "$HOME"/.claude.json "$HOME"/.claude/.credentials.json "$HOME"/.con
 
 # 6. egress posture — probe a non-allowlisted destination BY IP (bypasses DNS).
 #    Distinguish "blocked" (curl rc 7 refused / 28 timeout) from "probe broke".
+#    'contained' gates checks 7 and 8: those assert claims the host egress table
+#    makes, so they are only failures when that table is supposed to be loaded.
+contained=unknown
 if ! command -v curl >/dev/null 2>&1; then note "egress posture unknown (curl missing)"
 else
   out=$(curl -s -o /dev/null -w '%{http_code}' --max-time 6 https://1.1.1.1 2>/dev/null); rc=$?
   if [ "$rc" = 0 ] && [ "$out" != 000 ]; then
+    contained=no
     note "egress OPEN — direct internet reachable (1.1.1.1 = $out); run './kagebox egress on' for untrusted work"
   elif [ "$rc" = 7 ] || [ "$rc" = 28 ]; then
+    contained=yes
     pass "egress CONTAINED — direct internet (1.1.1.1) blocked (curl rc=$rc)"
   else note "egress posture inconclusive (curl rc=$rc)"; fi
 fi
 
-# 7. DNS still resolves (needed in both postures)
+# 7. when contained, the host is reachable on the BRIDGE PORT ONLY. The host
+#    egress input chain scopes guest->host traffic to the bridge + DNS/DHCP; if
+#    that chain is missing or mis-scoped the guest can reach every service the
+#    host has bound on this interface (sshd, dev servers, databases, published
+#    container ports) — and nothing else in this run would notice.
+hostports_bad=""
+for p in 22 80 443 3000 5432 8080 11434; do
+  [ "$p" = "$PORT" ] && continue
+  probe "$GW" "$p" 1 && hostports_bad="$hostports_bad $p"
+done
+if [ -n "$hostports_bad" ]; then
+  if [ "$contained" = yes ]; then bad "host port(s)$hostports_bad reachable at $GW — the host rule is not port-scoped"
+  else note "host port(s)$hostports_bad reachable at $GW (egress is open; contain to close them)"; fi
+else pass "host reachable on the bridge port only (sampled 22/80/443/3000/5432/8080/11434)"; fi
+
+# 8. the sandbox must not see your LAN. Skip any probe address that IS the
+#    gateway (that one is reachable by design and would be a false alarm).
+lan_bad=""
+for ip in 192.168.0.1 192.168.1.1 10.0.0.1 172.16.0.1; do
+  [ "$ip" = "$GW" ] && continue
+  probe "$ip" 80 1 && lan_bad="$lan_bad $ip:80"
+  probe "$ip" 22 1 && lan_bad="$lan_bad $ip:22"
+done
+if [ -n "$lan_bad" ]; then
+  if [ "$contained" = yes ]; then bad "LAN host(s) reachable from the sandbox:$lan_bad"
+  else note "LAN host(s) reachable:$lan_bad (egress is open — expected, and a reason to contain)"; fi
+else pass "no common LAN address reachable from the sandbox"; fi
+
+# 9. DNS still resolves (needed in both postures)
 getent hosts example.com >/dev/null 2>&1 && pass "DNS resolves (example.com)" \
                                           || note "DNS did not resolve example.com"
 
-# 8. the agent itself is installed
+# 10. the shared workspace is a two-way door — say so where it is visible.
+if [ -d "$HOME/workspace" ]; then
+  if touch "$HOME/workspace/.kagebox-verify-probe" 2>/dev/null; then
+    rm -f "$HOME/workspace/.kagebox-verify-probe"
+    note "~/workspace is mounted READ-WRITE — what the agent writes there lands on your host; treat it as untrusted input (SECURITY.md)"
+  else note "~/workspace is mounted read-only"; fi
+fi
+
+# 11. the agent itself is installed
 command -v hermes >/dev/null 2>&1 && pass "hermes binary present" || note "hermes not found in PATH"
 
 printf '\n  Summary: %d ok · %d info · %d FAIL\n' "$ok" "$info" "$fail"
@@ -502,17 +546,39 @@ cmd_task() {
   # (the in-guest egress-apply.sh below is only defence-in-depth). Host egress is
   # interface-wide, so this contains every VM on the bridge for the run; it is
   # left ON afterwards (the safe direction) — reopen with `./kagebox egress off`.
-  msg "containing the throwaway (host-enforced egress; needs sudo)..."
-  cmd_egress on >/dev/null || warn "host egress could not be enabled — the throwaway is only guest-contained (removable by its root agent)"
-  multipass transfer "$HERE/vm/egress-apply.sh" "$clone:/home/ubuntu/egress-apply.sh" 2>/dev/null || true
-  multipass transfer "$HERE/vm/egress-allowlist.txt" "$clone:/home/ubuntu/egress-allowlist.txt" 2>/dev/null || true
-  multipass exec "$clone" -- bash /home/ubuntu/egress-apply.sh on >/dev/null 2>&1 || true
+  #
+  # This is the mode most likely to be pointed at untrusted input, so failing to
+  # contain it must be fatal, not a warning scrolling past above the agent's
+  # output. If the host table cannot be loaded we destroy the clone and refuse
+  # to run rather than execute an unreviewed prompt with open internet.
+  if [ "${KAGEBOX_TASK_UNCONTAINED:-0}" = 1 ]; then
+    warn "KAGEBOX_TASK_UNCONTAINED=1 — running this task with OPEN egress."
+  else
+    msg "containing the throwaway (host-enforced egress; needs sudo)..."
+    if ! cmd_egress on >/dev/null; then
+      multipass delete --purge "$clone" 2>/dev/null || true
+      die "host egress could not be enabled (sudo declined?) — throwaway destroyed, task NOT run.
+    Run './kagebox egress on' once to authorise it, or set KAGEBOX_TASK_UNCONTAINED=1
+    to run anyway — only if you trust this prompt and its inputs completely."
+    fi
+    # Defence-in-depth inside the clone. Best-effort: the host table above is
+    # the control, and it is already known to be loaded at this point.
+    multipass transfer "$HERE/vm/egress-apply.sh" "$clone:/home/ubuntu/egress-apply.sh" 2>/dev/null || true
+    multipass transfer "$HERE/vm/egress-allowlist.txt" "$clone:/home/ubuntu/egress-allowlist.txt" 2>/dev/null || true
+    multipass exec "$clone" -- env BRIDGE_PORT="$BRIDGE_PORT" \
+      bash /home/ubuntu/egress-apply.sh on >/dev/null 2>&1 || true
+  fi
   printf '%s' "$prompt" | multipass exec "$clone" -- bash -c 'cat > ~/task.txt'
-  msg "running task in $clone (egress-contained; output -> workspace/)..."
+  if [ "${KAGEBOX_TASK_UNCONTAINED:-0}" = 1 ]; then
+    msg "running task in $clone (EGRESS OPEN; output -> workspace/)..."
+  else
+    msg "running task in $clone (egress-contained; output -> workspace/)..."
+  fi
   multipass exec "$clone" -- bash -lc 'cd ~/workspace 2>/dev/null; export XDG_RUNTIME_DIR=/run/user/$(id -u); hermes -z "$(cat ~/task.txt)" --yolo' 2>&1 | tail -25
   msg "destroying throwaway $clone."
   multipass delete --purge "$clone"
-  warn "host egress was left ON (host-enforced; contains ALL VMs on '$BRIDGE_IFACE', including $VM_NAME). Reopen with: ./kagebox egress off"
+  [ "${KAGEBOX_TASK_UNCONTAINED:-0}" = 1 ] || \
+    warn "host egress was left ON (host-enforced; contains ALL VMs on '$BRIDGE_IFACE', including $VM_NAME). Reopen with: ./kagebox egress off"
 }
 
 case "${1:-}" in

@@ -15,25 +15,29 @@ Routing (first match wins); unmatched paths go to the DEFAULT upstream (Ollama):
     (default)       ->  http://127.0.0.1:11434/*       (local Ollama)
 
 Design intent:
-  * Secrets / auth live on the HOST. They never enter the sandbox VM.
+  * Secrets / auth live on the HOST. They never enter the sandbox VM, and any
+    credential header the guest sends is dropped rather than relayed.
   * `claude -p` is invoked with ALL tools disabled, in an empty working dir, so
-    the sandbox gets Claude's TEXT but cannot make Claude act on your host.
+    the sandbox gets Claude's TEXT but cannot make Claude act on your host. The
+    route refuses to serve unless those flags are verified present, and is
+    rate-capped so the guest cannot burn your quota.
   * Only allowlisted upstreams are reachable. Add one by editing ROUTES.
+  * The default (Ollama) route exposes inference and read-only endpoints only —
+    model management stays on the host side of the boundary.
 
 Stdlib only. No third-party dependencies.
 """
 from __future__ import annotations
 import os
-import re
 import sys
 import json
 import time
 import shutil
 import posixpath
 import subprocess
+import threading
 import urllib.request
 import urllib.error
-import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ.get("BRIDGE_PORT", "18080"))
@@ -42,31 +46,46 @@ DEFAULT_UP = os.environ.get("OLLAMA_UPSTREAM", "http://127.0.0.1:11434").rstrip(
 # Host-side append-only audit log (JSONL) of every request the sandbox makes.
 AUDIT_LOG = os.environ.get("BRIDGE_AUDIT_LOG", "")
 
-# Ollama model-management endpoints the sandbox must NOT reach through the
-# default route — the agent needs inference, not the ability to delete/replace
-# the host's models. Ollama's admin surface is small and stable, so a denylist
-# is safe here; inference/list/show endpoints (/api/generate, /api/chat,
-# /api/embed, /api/tags, /api/show, /api/ps, /api/version, /v1/*) still pass.
-OLLAMA_ADMIN = ("/api/create", "/api/pull", "/api/push", "/api/copy",
-                "/api/delete", "/api/blobs")
+# Ollama serves model *management* on the same port as inference, so the
+# default route is an ALLOWLIST of the endpoints the sandbox legitimately
+# needs — inference plus read-only introspection. Anything not named here is
+# refused, including endpoints Ollama may add in a future release.
+#
+# An allowlist rather than a denylist because this check fails closed: a path
+# the guest obfuscates (percent-encoding, traversal, duplicate slashes) simply
+# fails to match and is refused, so there is no decoding race with however
+# Ollama's own router normalises the path.
+#
+# This is not just model hygiene. `/api/pull` and `/api/create` make the HOST
+# fetch from an arbitrary registry, handing the guest an egress path that
+# neither the host nor the guest egress allowlist can see. `/api/delete`,
+# `/api/copy` and `/api/push` let it destroy or replace the model it is served,
+# and `/api/blobs/*` lets it stage arbitrary bytes on the host.
+OLLAMA_ALLOWED_EXACT = {
+    "/",
+    "/api/version", "/api/tags", "/api/ps", "/api/show",
+    "/api/chat", "/api/generate", "/api/embed", "/api/embeddings",
+    "/v1/models", "/v1/chat/completions", "/v1/completions", "/v1/embeddings",
+}
+OLLAMA_ALLOWED_PREFIX = ("/v1/models/",)
 
 
-def blocked_admin(path: str) -> bool:
-    # Match the path the way the upstream router will actually interpret it, so
-    # a guest cannot obfuscate an admin endpoint past this check and have Ollama
-    # decode it back (e.g. /api/%64elete -> /api/delete). Percent-decode
-    # repeatedly (defeats double-encoding like %2564), collapse duplicate
-    # slashes, then resolve . and .. segments. Over-decoding can only over-block
-    # (a path Ollama would 404 on), never let an admin op through.
-    p = path.split("?", 1)[0]
-    for _ in range(3):
-        d = urllib.parse.unquote(p)
-        if d == p:
-            break
-        p = d
-    p = re.sub(r"/{2,}", "/", p)          # collapse duplicate slashes
-    p = posixpath.normpath(p)             # resolve . and .. segments
-    return any(p == a or p.startswith(a + "/") for a in OLLAMA_ADMIN)
+def ollama_path_allowed(path: str) -> bool:
+    """True if `path` is an inference/read endpoint we expose to the sandbox."""
+    p = path.split("?", 1)[0].split("#", 1)[0]
+    # posixpath.normpath preserves a leading '//' (POSIX gives it special
+    # meaning), which would make '//api/chat' miss the set and 403 a perfectly
+    # good inference call. Collapse it before normalising.
+    p = "/" + p.lstrip("/")
+    # Normalise so that /api/chat/../api/delete cannot smuggle past the set.
+    p = posixpath.normpath(p)
+    if not p.startswith("/"):
+        p = "/" + p
+    if len(p) > 1 and p.endswith("/"):
+        p = p.rstrip("/")
+    if p in OLLAMA_ALLOWED_EXACT:
+        return True
+    return any(p.startswith(pref) for pref in OLLAMA_ALLOWED_PREFIX)
 
 
 def audit(entry):
@@ -190,6 +209,14 @@ CLAUDE_TIMEOUT = int(os.environ.get("CLAUDE_BRIDGE_TIMEOUT", "600"))
 CLAUDE_DISALLOWED = ["Bash", "Edit", "Write", "Read", "MultiEdit", "NotebookEdit",
                      "NotebookRead", "Glob", "Grep", "WebFetch", "WebSearch",
                      "Task", "TodoWrite"]
+# An empty MCP server set. NOTE: `--mcp-config '{}'` is REJECTED by the CLI
+# ("mcpServers: expected record, received undefined") — the key is required.
+CLAUDE_EMPTY_MCP = '{"mcpServers":{}}'
+# Guest-controlled prompts drive a host process authenticated as you, so cap how
+# fast the sandbox can spend your quota. 0 disables the cap.
+CLAUDE_MAX_PER_HOUR = int(os.environ.get("CLAUDE_BRIDGE_MAX_PER_HOUR", "60"))
+# Escape hatch for a CLI whose flags we cannot verify. Default closed.
+CLAUDE_ALLOW_UNVERIFIED = os.environ.get("CLAUDE_BRIDGE_ALLOW_UNVERIFIED") == "1"
 
 
 def claude_bin() -> str:
@@ -208,41 +235,85 @@ def claude_bin() -> str:
 
 
 CLAUDE_BIN = claude_bin()
-# Fail-closed gate for the /claude route: flipped False if the CLI is confirmed
-# to lack the flags run_claude() relies on to suppress tools/MCP. When False the
-# route returns 503 rather than running `claude -p` with tools possibly ENABLED.
-CLAUDE_ROUTE_OK = True
+
+# Sentinel distinguishing "no claude CLI here" from "claude is here but we
+# cannot prove it suppresses tools" — the latter is the security-relevant case.
+CLAUDE_MISSING = "__claude_not_installed__"
 
 
-def assert_claude_flags():
-    """Confirm the claude CLI still has the flags run_claude() relies on to
-    suppress tools/MCP. A denylist fails open; if a CLI rename dropped these
-    flags we would silently run `claude -p` with tools ENABLED — a quiet
-    guest->host action channel. If they are confirmed MISSING, disable the
-    /claude route (fail closed). If --help can't be run at all, warn only (real
-    calls surface their own errors) rather than disable on a transient hiccup."""
-    global CLAUDE_ROUTE_OK
-    needed = ("--allowed-tools", "--disallowed-tools", "--strict-mcp-config", "--mcp-config")
+def claude_guard():
+    """Resolve the tool/MCP suppression flags this `claude` build understands.
+
+    Returns (flags, error). A non-empty `error` means /claude must refuse to
+    serve — the caller turns it into a 503.
+
+    The point is to fail LOUDLY and CLOSED. These flags have been renamed across
+    Claude Code releases, and an unrecognised flag does not reliably error — it
+    can simply leave tools enabled, which would quietly turn this route into a
+    guest-to-host action channel running under the host user's own credentials
+    and MCP servers. So we read `claude --help` and assert the flags are really
+    there. If we cannot even run --help we still refuse: an unverifiable CLI is
+    exactly the case this check exists for. CLAUDE_BRIDGE_ALLOW_UNVERIFIED=1
+    overrides, for someone who has read run_claude() and accepts the risk.
+    """
     try:
         r = subprocess.run([CLAUDE_BIN, "--help"], capture_output=True,
-                           text=True, timeout=15)
-        h = (r.stdout or "") + (r.stderr or "")   # some CLIs print --help to stderr
+                           text=True, timeout=30)
+        help_txt = (r.stdout or "") + (r.stderr or "")  # some CLIs print help to stderr
+    except FileNotFoundError:
+        # Not installed at all. That is a plain configuration problem, not a
+        # containment failure — keep the actionable 502 rather than telling the
+        # user to upgrade a CLI they do not have.
+        return [], CLAUDE_MISSING
     except Exception as e:
-        sys.stderr.write(f"[bridge] WARNING: could not verify claude flags ({e}); "
-                         f"/claude tool-suppression is UNCONFIRMED\n")
-        return
-    missing = [f for f in needed if f not in h]
-    if missing:
-        CLAUDE_ROUTE_OK = False
-        sys.stderr.write(f"[bridge] ERROR: claude CLI is missing {missing}; "
-                         f"DISABLING /claude route (fail closed) — review run_claude()\n")
+        return [], f"could not run '{CLAUDE_BIN} --help' to verify tool suppression ({e})"
 
+    def has(flag):
+        return flag in help_txt
+
+    flags, missing = [], []
+    # MCP suppression is the part that must not silently fail: without it a
+    # guest prompt can reach whatever MCP servers the host user has configured.
+    if has("--strict-mcp-config") and has("--mcp-config"):
+        flags += ["--strict-mcp-config", "--mcp-config", CLAUDE_EMPTY_MCP]
+    else:
+        missing.append("--strict-mcp-config/--mcp-config")
+
+    # Belt and braces: an explicit empty allowlist *and* the historical denylist.
+    # The allowlist is what covers tools added in a future release.
+    if has("--allowed-tools"):
+        flags += ["--allowed-tools", ""]
+    elif has("--allowedTools"):
+        flags += ["--allowedTools", ""]
+    else:
+        missing.append("--allowed-tools")
+
+    if has("--disallowed-tools"):
+        flags += ["--disallowed-tools", *CLAUDE_DISALLOWED]
+    elif has("--disallowedTools"):
+        flags += ["--disallowedTools", *CLAUDE_DISALLOWED]
+    else:
+        missing.append("--disallowed-tools")
+
+    if missing:
+        return flags, (f"this 'claude' build does not expose {', '.join(missing)} "
+                       f"— cannot prove tools/MCP are suppressed")
+    return flags, ""
+
+
+CLAUDE_FLAGS, CLAUDE_GUARD_ERR = claude_guard()
 
 HOP = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailers", "transfer-encoding", "upgrade", "host",
     "content-length", "accept-encoding",
 }
+
+# Upstream credentials are injected here, on the host. Anything the guest sends
+# under these names is dropped rather than relayed, so a guest-supplied header
+# can never reach an upstream on a route that happens not to inject one of its
+# own. (Hermes/Claude Code in the VM send placeholder keys by design.)
+CLIENT_AUTH_HDRS = {"authorization", "x-api-key", "api-key", "x-goog-api-key"}
 
 
 def bind_ip() -> str:
@@ -262,13 +333,14 @@ def bind_ip() -> str:
 
 
 def resolve(path: str):
+    """-> (upstream_url, injected_headers, is_default_route)."""
     for prefix, up, strip, inject in ROUTES:
         if path.startswith(prefix):
             tail = path[len(prefix):] if strip else path
             if not tail.startswith("/"):
                 tail = "/" + tail
-            return up.rstrip("/") + tail, inject
-    return DEFAULT_UP + path, {}
+            return up.rstrip("/") + tail, inject, False
+    return DEFAULT_UP + path, {}, True
 
 
 def flatten_messages(messages):
@@ -295,9 +367,31 @@ def flatten_messages(messages):
     return prompt
 
 
+_claude_calls = []          # unix timestamps of recent /claude invocations
+_claude_lock = threading.Lock()
+
+
+def claude_rate_ok():
+    """False once the sandbox has spent its hourly /claude budget.
+
+    The guest writes the prompts but the host pays for them, so an injected
+    agent could otherwise burn the host user's quota in a loop.
+    """
+    if CLAUDE_MAX_PER_HOUR <= 0:
+        return True
+    now = time.time()
+    with _claude_lock:
+        _claude_calls[:] = [t for t in _claude_calls if now - t < 3600]
+        if len(_claude_calls) >= CLAUDE_MAX_PER_HOUR:
+            return False
+        _claude_calls.append(now)
+        return True
+
+
 def run_claude(prompt, model, timeout):
     # Tools are suppressed three ways, deliberately redundant so a single CLI
-    # change cannot silently re-enable them (see assert_claude_flags):
+    # change cannot silently re-enable them (CLAUDE_FLAGS is what claude_guard()
+    # confirmed this build actually understands):
     #   --allowed-tools ""            an empty allowlist — nothing is permitted,
     #                                 including any tool added in a future release
     #   --disallowed-tools <list>     belt-and-braces denylist of built-ins
@@ -307,10 +401,7 @@ def run_claude(prompt, model, timeout):
     #                                 prompt can't invoke mcp__* tools host-side.
     # The route returns Claude's TEXT only; it cannot act on the host.
     cmd = [CLAUDE_BIN, "-p", prompt, "--output-format", "json",
-           "--model", model,
-           "--allowed-tools", "",
-           "--disallowed-tools", *CLAUDE_DISALLOWED,
-           "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']
+           "--model", model, *CLAUDE_FLAGS]
     p = subprocess.run(cmd, cwd=CLAUDE_CWD, capture_output=True,
                        text=True, timeout=timeout)
     out = (p.stdout or "").strip()
@@ -340,12 +431,15 @@ class Handler(BaseHTTPRequestHandler):
         # parsed as the next request and desync the connection.
         length = int(self.headers.get("Content-Length", 0) or 0)
         body = self.rfile.read(length) if length else None
-        if blocked_admin(self.path):
-            return self._fail(403, "gateway: blocked — Ollama model-management "
-                                   "endpoint not permitted from the sandbox")
-        url, inject = resolve(self.path)
+        url, inject, is_default = resolve(self.path)
+        if is_default and not ollama_path_allowed(self.path):
+            return self._fail(
+                403, f"gateway: {self.path} is not exposed to the sandbox "
+                     f"(only inference and read-only endpoints are)")
 
         fwd = {k: v for k, v in self.headers.items() if k.lower() not in HOP}
+        for k in [k for k in fwd if k.lower() in CLIENT_AUTH_HDRS]:
+            del fwd[k]
 
         def force(name, value):
             for k in [k for k in fwd if k.lower() == name.lower()]:
@@ -387,6 +481,13 @@ class Handler(BaseHTTPRequestHandler):
             if k.lower() in HOP:
                 continue
             self.send_header(k, v)
+        if self.command == "HEAD":
+            # A HEAD response carries no body; emitting one desyncs a kept-alive
+            # connection, letting the next response be read as part of this one.
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            self._log(url, code)
+            return
         self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
         tail = b""
@@ -413,16 +514,32 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- local claude -p endpoint --------------------------------------------
     def _claude(self):
-        if not CLAUDE_ROUTE_OK:
-            return self._fail(503, "gateway: /claude disabled — the claude CLI "
-                                   "could not be confirmed to suppress tools/MCP")
+        # Drain the body before any early return, for the same reason as in
+        # _proxy: unread Content-Length bytes left on a kept-alive HTTP/1.1
+        # socket get parsed as the next request and desync the connection.
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        raw = self.rfile.read(length) if length else b"{}"
+
+        if CLAUDE_GUARD_ERR == CLAUDE_MISSING:
+            return self._fail(502, "gateway: 'claude' CLI not found on host")
+        if CLAUDE_GUARD_ERR and not CLAUDE_ALLOW_UNVERIFIED:
+            return self._fail(
+                503, f"gateway: /claude disabled — {CLAUDE_GUARD_ERR}. Upgrade "
+                     f"the claude CLI, or set CLAUDE_BRIDGE_ALLOW_UNVERIFIED=1 "
+                     f"to serve it anyway (this may expose host tools and MCP "
+                     f"servers to the sandbox).")
         if self.path.rstrip("/").endswith("/models"):
             data = [{"id": m, "object": "model", "owned_by": "anthropic-claude-cli"}
                     for m in ("sonnet", "opus", "haiku")]
             return self._send_json({"object": "list", "data": data})
 
-        length = int(self.headers.get("Content-Length", 0) or 0)
-        raw = self.rfile.read(length) if length else b"{}"
+        # Counted after the cheap gates above so a listing or a disabled-route
+        # 503 does not consume budget, but before the work that costs quota.
+        if not claude_rate_ok():
+            return self._fail(429, f"gateway: /claude rate limit reached "
+                                   f"({CLAUDE_MAX_PER_HOUR}/hour) — the sandbox "
+                                   f"has spent this hour's host-quota budget")
+
         try:
             req = json.loads(raw or b"{}")
         except Exception:
@@ -517,7 +634,15 @@ def main():
             f"and has the VM network come up yet?\n")
         sys.exit(1)
     os.makedirs(CLAUDE_CWD, exist_ok=True)
-    assert_claude_flags()
+    if CLAUDE_GUARD_ERR == CLAUDE_MISSING:
+        sys.stderr.write("[bridge] note: no 'claude' CLI on host — /claude will 502 "
+                         "(the other routes are unaffected)\n")
+        sys.stderr.flush()
+    elif CLAUDE_GUARD_ERR:
+        state = ("SERVING ANYWAY (CLAUDE_BRIDGE_ALLOW_UNVERIFIED=1)"
+                 if CLAUDE_ALLOW_UNVERIFIED else "route DISABLED (fail closed)")
+        sys.stderr.write(f"[bridge] !! /claude: {CLAUDE_GUARD_ERR} — {state}\n")
+        sys.stderr.flush()
     srv = ThreadingHTTPServer((ip, PORT), Handler)
     sys.stdout.write(
         f"[bridge] listening on {ip}:{PORT}  default -> {DEFAULT_UP}  "
