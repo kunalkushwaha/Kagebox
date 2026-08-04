@@ -35,6 +35,22 @@ jobs:
       - name: Validate architecture SVG
         run: python3 -c "import xml.dom.minidom; xml.dom.minidom.parse('docs/architecture.svg'); print('SVG OK')"
 
+      - name: Bridge containment tests
+        run: python3 tests/test_gateway.py
+
+      - name: Validate egress rulesets (nft syntax)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq nftables
+          # Syntax-check exactly what `egress-apply.sh on` would apply, so a
+          # malformed rule is caught here rather than inside a VM at runtime —
+          # where a failed load means the sandbox is silently uncontained.
+          # Both with and without an IPv6 gateway present.
+          for gw6 in "fe80::1" ""; do
+            GW=10.0.0.1 GW6="$gw6" BRIDGE_PORT=18080 \
+              bash vm/egress-apply.sh render | sudo nft -c -f -
+          done
+          echo "guest egress ruleset OK (v6 gateway present and absent)"
+
       - name: ShellCheck (informational)
         continue-on-error: true
         run: |
