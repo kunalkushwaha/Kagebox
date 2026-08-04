@@ -6,7 +6,9 @@
 # SCOPE — read this before trusting it:
 #   * This runs INSIDE the VM, where the agent has passwordless sudo. It raises
 #     the bar against mistakes and casual injection, but an agent with root here
-#     can remove it. Host-side enforcement is the real control. See SECURITY.md.
+#     can remove it. `bridge/host-egress.sh` is the authoritative control — it
+#     enforces the same allowlist on the HOST, outside the blast radius. This
+#     script is defence-in-depth only. See SECURITY.md.
 #   * The allowlist is resolved to IP addresses. For CDN-hosted APIs a single
 #     address fronts many unrelated names, so an entry is broader than it looks.
 #   * DNS is permitted (rate-limited) and remains a low-bandwidth side channel.
