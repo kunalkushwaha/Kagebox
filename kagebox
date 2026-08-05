@@ -7,7 +7,8 @@
 #   ./kagebox down        stop the VM and the bridge
 #   ./kagebox status      show VM + bridge + Ollama status
 #   ./kagebox shell       open a shell in the sandbox (then type: hermes)
-#   ./kagebox bridge ...  start | stop | status | log | install
+#   ./kagebox bridge ...  start | stop | restart | status | log | install
+#                         (restart redeploys after editing bridge/gateway.py)
 #   ./kagebox model       (re)build the large-context Ollama model
 #   ./kagebox provision    (re)install/configure Hermes inside the VM
 #   ./kagebox claude      install Claude Code in the sandbox, wired to the bridge
@@ -77,6 +78,15 @@ bridge_install() {
 bridge_start() {
   [ -f "$UNIT_DIR/kagebox-bridge.service" ] || bridge_install
   systemctl --user enable --now kagebox-bridge.service
+  sleep 1
+  systemctl --user --no-pager -l status kagebox-bridge.service | sed -n '1,6p' || true
+}
+bridge_restart() {
+  # `bridge_start` uses `enable --now`, which is a no-op on an already-running
+  # unit — so editing gateway.py and re-running up/start keeps serving the OLD
+  # code. This forces the running process to be replaced by the on-disk code.
+  [ -f "$UNIT_DIR/kagebox-bridge.service" ] || bridge_install
+  systemctl --user restart kagebox-bridge.service
   sleep 1
   systemctl --user --no-pager -l status kagebox-bridge.service | sed -n '1,6p' || true
 }
@@ -608,9 +618,9 @@ case "${1:-}" in
   destroy) cmd_destroy ;;
   bridge)
     case "${2:-status}" in
-      start) bridge_start ;; stop) bridge_stop ;; install) bridge_install ;;
+      start) bridge_start ;; stop) bridge_stop ;; restart) bridge_restart ;; install) bridge_install ;;
       status) bridge_status ;; log) bridge_log "${3:-40}" ;;
-      *) echo "usage: kagebox bridge {start|stop|status|log|install}" ;;
+      *) echo "usage: kagebox bridge {start|stop|restart|status|log|install}" ;;
     esac ;;
   ""|help|-h|--help)
     awk 'NR>1 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$HERE/kagebox" ;;
