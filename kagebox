@@ -463,33 +463,80 @@ cmd_telegram() {
   cat <<'INTRO'
 Telegram gateway setup. First, in the Telegram app:
   1. Message @BotFather   -> /newbot -> copy the BOT TOKEN (like 123456:ABC-...)
-  2. Message @userinfobot -> copy your numeric USER ID
+  2. Message @userinfobot -> copy your numeric USER ID (a number like 123456789,
+     NOT an @username — a username silently denies every message)
 INTRO
   local TG_TOKEN TG_USERS
   read -rsp "Paste the Telegram BOT TOKEN: " TG_TOKEN; echo
-  read -rp  "Your Telegram user ID(s), comma-separated (allowlist): " TG_USERS
+  read -rp  "Your Telegram user ID(s), comma-separated (NUMERIC): " TG_USERS
   [ -n "$TG_TOKEN" ] && [ -n "$TG_USERS" ] || die "both the token and your user id are required"
-  msg "Configuring + starting the Telegram gateway inside '$VM_NAME'..."
+  # Telegram user IDs are numbers. Reject @usernames / other text up front — a
+  # non-numeric allowlist silently denies every message, which reads as a dead
+  # bot with no error (exactly the trap that bit the first setup).
+  case "$TG_USERS" in
+    *[!0-9,\ ]*) die "allowlist must be NUMERIC id(s) from @userinfobot (e.g. 123456789 or 111,222) — got '$TG_USERS'. An @username will not work." ;;
+  esac
+  # Token shape sanity check (BotFather tokens are <digits>:<rest>); warn, don't block.
+  case "$TG_TOKEN" in
+    [0-9]*:?*) : ;;
+    *) warn "that doesn't look like a BotFather token (expected 123456:ABC...) — continuing anyway" ;;
+  esac
+
+  # A contained sandbox drops all egress except the allowlist, so the bot cannot
+  # reach Telegram unless api.telegram.org is on it. Add it here so the bot works
+  # WITHOUT opening egress wide — the whole point of containment.
+  local allow="$HERE/vm/egress-allowlist.txt"
+  if [ -f "$allow" ] && ! grep -qE '^[[:space:]]*api\.telegram\.org[[:space:]]*$' "$allow"; then
+    printf 'api.telegram.org\n' >> "$allow"
+    msg "added api.telegram.org to vm/egress-allowlist.txt (the bot needs it while contained)"
+  fi
+  # If egress is currently contained, re-apply BEFORE (re)starting the gateway so
+  # Telegram is reachable the moment it comes up. Needs sudo; non-fatal.
+  if [ -f /etc/cron.d/kagebox-egress ]; then
+    msg "re-applying host egress so api.telegram.org resolves into the allowlist (needs sudo)..."
+    cmd_egress on || warn "could not re-apply egress — run './kagebox egress on' so the bot can reach Telegram"
+  else
+    warn "egress is OPEN now; api.telegram.org is already in the allowlist, so the bot keeps working when you later run './kagebox egress on'."
+  fi
+
+  msg "Configuring the Telegram gateway inside '$VM_NAME'..."
   # token travels via stdin (a pipe), never in argv/process-list/history
   printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_ALLOWED_USERS=%s\n' "$TG_TOKEN" "$TG_USERS" \
     | multipass exec "$VM_NAME" -- bash -lc '
-        umask 077
+        set -u; umask 077
+        export XDG_RUNTIME_DIR=/run/user/$(id -u)
         new=$(cat)
-        touch ~/.hermes/.env
+        mkdir -p ~/.hermes; touch ~/.hermes/.env
         grep -vE "^(TELEGRAM_BOT_TOKEN|TELEGRAM_ALLOWED_USERS)=" ~/.hermes/.env > ~/.hermes/.env.new || true
         printf "%s\n" "$new" >> ~/.hermes/.env.new
         mv ~/.hermes/.env.new ~/.hermes/.env
         chmod 600 ~/.hermes/.env
         echo "Saved token + allowlist to ~/.hermes/.env (deny-all except your ID)."
-        export XDG_RUNTIME_DIR=/run/user/$(id -u)
-        # boot-time system service is most robust for a headless VM (sudo is passwordless here);
-        # fall back to a user service if --system is unavailable.
-        sudo hermes gateway install --system 2>&1 | tail -8 \
-          || hermes gateway install 2>&1 | tail -8 || true
-        hermes gateway start 2>&1 | tail -4 || sudo hermes gateway start 2>&1 | tail -4 || true
-        echo "--- status ---"; hermes gateway status 2>&1 | tail -15 || true
+        # Install the USER service only if it is missing. NOT "sudo hermes ...":
+        # sudo secure_path drops ~/.local/bin, so it fails command-not-found (the
+        # original bug). When already installed we skip straight to a restart —
+        # the installer prompts on /dev/tty, which only works when you run this
+        # from a real terminal (it does), not headless.
+        if ! systemctl --user cat hermes-gateway.service >/dev/null 2>&1; then
+          echo "installing the gateway user service (first time)..."
+          hermes gateway install --start-on-login --no-start-now || \
+            echo "!! install did not complete — run: ./kagebox gateway install"
+          loginctl enable-linger "$(id -un)" >/dev/null 2>&1 || true
+        fi
+        # Restart via systemd (Type=simple -> returns immediately) so it re-reads
+        # the .env we just wrote. NOT "hermes gateway restart": that wrapper waits
+        # for readiness and HANGS when the bot cannot yet reach Telegram.
+        systemctl --user restart hermes-gateway.service 2>/dev/null \
+          || systemctl --user start hermes-gateway.service 2>/dev/null || true
+        sleep 2
+        echo "--- gateway: $(systemctl --user is-active hermes-gateway.service 2>/dev/null || echo not-installed) ---"
       '
-  msg "Message your bot on Telegram. Manage it with: ./kagebox gateway {status|restart|stop|run}"
+  # Persist NOW. ./kagebox setup restores ~/.hermes from the last state backup,
+  # so without an immediate backup the token is wiped the next time setup runs —
+  # which is exactly what happened on the first attempt. This captures it.
+  msg "backing up state so the token survives a future ./kagebox setup..."
+  cmd_backup >/dev/null 2>&1 || warn "state backup failed — token is set but not mirrored to the host; run './kagebox backup'"
+  msg "Done. Message your bot on Telegram; manage it with: ./kagebox gateway {status|restart|stop|run}"
 }
 
 cmd_snapshot() {
