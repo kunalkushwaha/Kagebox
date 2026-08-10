@@ -61,6 +61,17 @@ bound the blast radius.
   It is a deliberate, user-initiated window — and installing a skill runs that
   skill's code inside the VM, so only install skills you trust. Read-only
   operations (`list`, `config`, `uninstall`) never open the door.
+- **`./kagebox research "<q>"` opens the VM's full internet for one run, then
+  re-seals.** Web research that reads arbitrary pages *is* broad egress — you
+  cannot allowlist "the web" by IP — so this opens the door for the duration of
+  the run and re-seals afterward (even on Ctrl-C). While the window is open the
+  **whole VM** (the agent and any gateway) can reach the internet, so run it only
+  on prompts you trust; for untrusted input prefer `./kagebox task` (throwaway
+  clone). A best-effort content filter (a family DNS resolver that blocks
+  adult/malware, tunable via `KAGEBOX_FILTER_DNS`) applies during the window —
+  but that is **hygiene, not containment**: a DNS denylist fails *open* and
+  cannot stop a determined exfil, which is exactly why the door still closes
+  again when the run ends.
 - **The shared `workspace/` folder is a two-way door.** Anything you put there is
   readable by the agent; anything it writes there lands on your host. Don't put
   secrets in `workspace/`.
