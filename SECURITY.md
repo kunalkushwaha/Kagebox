@@ -72,6 +72,26 @@ bound the blast radius.
   but that is **hygiene, not containment**: a DNS denylist fails *open* and
   cannot stop a determined exfil, which is exactly why the door still closes
   again when the run ends.
+- **`./kagebox warden` lets the sandbox *request* internet windows you approve
+  from your phone.** The guest POSTs to `/egress/request` on the bridge; the
+  bridge relays it over a root-only unix socket to the warden, which asks you on
+  Telegram and opens egress only on your tap — for a bounded number of seconds
+  (default 60, hard max 300, 8/hour), after which it re-seals. **The guest can
+  ask; it can never grant:** it has no path to nftables, no path to the unix
+  socket, and — critically — the **approval bot must be a different bot from the
+  one running in the VM**, with its token in root-only `/etc/kagebox/warden.env`.
+  The in-VM bot's token lives inside the sandbox, so a compromised sandbox holds
+  it; it must not also be the credential guarding the door. Every failure path
+  denies (no warden, no token, no approver, timeout, malformed request). The
+  window closes on a monotonic deadline in a `finally`, backed by signal
+  handlers, an on-disk marker re-checked at startup, and systemd
+  `ExecStopPost` — a warden killed mid-window re-seals on restart.
+  **Residual:** while a window is open the **whole VM** has open internet, not
+  just the agent's search — it is a bounded window, not a narrow channel. And
+  the `reason` shown to you is written by the guest, so a prompt-injected agent
+  can word it persuasively; it is displayed as untrusted plain text, never
+  markup, but *approve on whether you expected the request, not on how good the
+  reason sounds.* Approval fatigue is the attack this cap exists to blunt.
 - **The shared `workspace/` folder is a two-way door.** Anything you put there is
   readable by the agent; anything it writes there lands on your host. Don't put
   secrets in `workspace/`.

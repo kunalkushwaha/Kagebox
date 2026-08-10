@@ -18,6 +18,8 @@
 #   ./kagebox gateway ... manage the messaging gateway (status|start|stop|restart|run)
 #   ./kagebox skills ...  install/search/manage Hermes skills
 #                         (opens egress just for the fetch, then re-seals)
+#   ./kagebox warden ...  approve-from-your-phone internet windows for the VM
+#                         (setup|status|log) — the sandbox asks, only you grant
 #   ./kagebox research "<q>"  web-enabled research/search in a bounded window:
 #                         opens the VM's internet (adult/malware DNS-filtered),
 #                         runs the task, then re-seals. Not containment — see -h.
@@ -552,6 +554,120 @@ cmd_research() {
   trap - EXIT INT TERM
 }
 
+# --- egress warden: the sandbox asks, you approve, the window closes itself ---
+# `research` opens the door from a terminal with your sudo, which is useless
+# from a phone. The warden is the phone-shaped version: the VM can REQUEST a
+# window over the bridge, the request reaches you on Telegram, and only your
+# tap opens it — for a bounded number of seconds, after which it re-seals.
+#
+# The approval bot MUST be a different bot from the one running inside the VM.
+# The in-VM bot's token lives in the sandbox; if the sandbox is compromised it
+# controls that conversation and could answer for you. This token stays on the
+# host, in a root-only file, and never enters the VM.
+WARDEN_CONF="/etc/kagebox/warden.env"
+WARDEN_UNIT="/etc/systemd/system/kagebox-warden.service"
+
+warden_setup() {
+  command -v systemctl >/dev/null 2>&1 || die "systemd required for the warden"
+  cat <<'INTRO'
+
+  Kagebox egress warden — setup
+  =============================
+  This lets the sandbox ASK for internet access and lets YOU approve it from
+  your phone. The window is time-boxed and re-seals automatically.
+
+  You need a SECOND Telegram bot, separate from the one in the VM:
+    1. Message @BotFather -> /newbot  (name it e.g. "kagebox warden")
+    2. Copy the token it gives you.
+  Why separate: the in-VM bot's token sits inside the sandbox. If the sandbox
+  is ever compromised it holds that credential — so it must not be the one
+  guarding the door. This token stays on the host, readable only by root.
+
+INTRO
+  local tok users
+  printf 'Warden bot token (input hidden): '; read -rs tok; echo
+  [ -n "$tok" ] || die "no token given — nothing written"
+  case "$tok" in [0-9]*:?*) ;; *) die "that does not look like a bot token (expected 123456:ABC-...)" ;; esac
+  printf 'Your numeric Telegram user id (comma-separated for several): '; read -r users
+  [ -n "$users" ] || die "no approver id given — a warden with no approvers denies everything"
+  case "$users" in *[!0-9,\ ]*) die "user ids must be numeric (get yours from @userinfobot)" ;; esac
+
+  msg "writing $WARDEN_CONF (root-only)..."
+  sudo install -d -m 0755 /etc/kagebox || die "could not create /etc/kagebox"
+  # Written via stdin so the token never appears in the process list or history.
+  printf 'WARDEN_BOT_TOKEN=%s\nWARDEN_ALLOWED_USERS=%s\nWARDEN_SOCK_GROUP=%s\n' \
+    "$tok" "${users// /}" "$(id -gn)" \
+    | sudo tee "$WARDEN_CONF" >/dev/null || die "could not write $WARDEN_CONF"
+  sudo chmod 0600 "$WARDEN_CONF"; sudo chown root:root "$WARDEN_CONF"
+
+  msg "installing the warden service..."
+  sed -e "s|__KAGEBOX_DIR__|${HERE}|g" "$HERE/bridge/kagebox-warden.service" \
+    | sudo tee "$WARDEN_UNIT" >/dev/null || die "could not write $WARDEN_UNIT"
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now kagebox-warden.service || die "warden failed to start (see: ./kagebox warden log)"
+  sleep 1
+  # The gateway needs the new /egress/request route and the socket path.
+  bridge_restart >/dev/null 2>&1 || true
+  warden_install_helper
+  msg "warden ready — the sandbox can now ask; only your tap opens the door."
+  warden_status
+}
+
+# Drop the asking-tool inside the VM. This is the guest's whole vocabulary for
+# the request: it can ask, and it can be told no.
+warden_install_helper() {
+  vm_exists || return 0
+  local gw; gw="$(bridge_ip)"
+  [ -n "$gw" ] || return 0
+  multipass exec "$VM_NAME" -- env GW="$gw" PORT="$BRIDGE_PORT" bash -lc '
+    sudo tee /usr/local/bin/kagebox-web >/dev/null <<EOF
+#!/usr/bin/env bash
+# Ask the host for a time-boxed internet window. The host decides; you cannot.
+# usage: kagebox-web [seconds] "<why you need the web>"
+set -u
+SECS="\${1:-60}"; shift 2>/dev/null || true; REASON="\${*:-web access}"
+case "\$SECS" in ""|*[!0-9]*) REASON="\$SECS \$REASON"; SECS=60 ;; esac
+echo "requesting \${SECS}s of web access from the host (waiting for approval)..." >&2
+python3 - "\$SECS" "\$REASON" <<PY
+import json,sys,urllib.request
+secs,reason=sys.argv[1],sys.argv[2]
+req=urllib.request.Request("http://${GW}:${PORT}/egress/request",
+    data=json.dumps({"seconds":int(secs),"reason":reason}).encode(),
+    headers={"content-type":"application/json"})
+try:
+    r=json.loads(urllib.request.urlopen(req,timeout=480).read().decode())
+except Exception as e:
+    print("request failed (denied):",e); sys.exit(1)
+print(("GRANTED: " if r.get("granted") else "DENIED: ")+str(r.get("detail","")))
+sys.exit(0 if r.get("granted") else 1)
+PY
+EOF
+    sudo chmod 0755 /usr/local/bin/kagebox-web' >/dev/null 2>&1 \
+    && msg "installed 'kagebox-web' inside the VM (the agent's way to ask)" \
+    || warn "could not install the in-VM helper (is the VM running?)"
+}
+
+warden_status() {
+  if [ ! -f "$WARDEN_UNIT" ]; then echo "warden: NOT installed (./kagebox warden setup)"; return; fi
+  systemctl --no-pager -l status kagebox-warden.service 2>/dev/null | sed -n '1,6p' || true
+  if [ -f /run/kagebox/window-open ]; then
+    warn "a window is OPEN right now: $(cat /run/kagebox/window-open 2>/dev/null)"
+  else
+    echo "no window open (VM is sealed unless you also ran 'egress off')"
+  fi
+}
+
+cmd_warden() {
+  case "${1:-status}" in
+    setup|install) warden_setup ;;
+    status) warden_status ;;
+    log) journalctl -u kagebox-warden.service -n "${2:-40}" --no-pager 2>/dev/null || echo "no logs" ;;
+    helper) warden_install_helper ;;
+    stop)   sudo systemctl disable --now kagebox-warden.service ;;
+    *) echo "usage: kagebox warden {setup|status|log|helper|stop}" ;;
+  esac
+}
+
 cmd_telegram() {
   vm_exists || die "VM not up; run ./kagebox up"
   cat <<'INTRO'
@@ -745,6 +861,7 @@ case "${1:-}" in
   gateway) shift; cmd_gateway "$@" ;;
   skills) shift; cmd_skills "$@" ;;
   research) shift; cmd_research "$@" ;;
+  warden) shift; cmd_warden "$@" ;;
   backup) cmd_backup ;;
   restore) cmd_restore ;;
   egress) shift; cmd_egress "$@" ;;
