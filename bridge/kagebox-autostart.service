@@ -1,0 +1,21 @@
+[Unit]
+Description=Kagebox autostart (bring the sandbox VM + bridge up at login/boot)
+Documentation=file:__KAGEBOX_DIR__/README.md
+After=network-online.target
+
+[Service]
+# Oneshot: bring things up, then stay "active" so status reads honestly.
+Type=oneshot
+RemainAfterExit=yes
+# multipassd is a SYSTEM (snap) unit, so a user unit cannot order itself after
+# it reliably. Instead we retry: at boot the daemon's socket may not be up for
+# a few seconds, and `kagebox up` simply fails until it is.
+ExecStart=__KAGEBOX_DIR__/kagebox up
+Restart=on-failure
+RestartSec=10
+# Give it ~2 minutes of retries at boot, then stop trying.
+StartLimitBurst=12
+StartLimitIntervalSec=300
+
+[Install]
+WantedBy=default.target

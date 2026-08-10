@@ -18,6 +18,7 @@
 #   ./kagebox gateway ... manage the messaging gateway (status|start|stop|restart|run)
 #   ./kagebox skills ...  install/search/manage Hermes skills
 #                         (opens egress just for the fetch, then re-seals)
+#   ./kagebox autostart   keep VM+bridge alive across logout/reboot (on|off|status)
 #   ./kagebox warden ...  approve-from-your-phone internet windows for the VM
 #                         (setup|status|log) — the sandbox asks, only you grant
 #   ./kagebox research "<q>"  web-enabled research/search in a bounded window:
@@ -668,6 +669,52 @@ cmd_warden() {
   esac
 }
 
+# --- autostart: survive logout and reboot ------------------------------------
+# Three things have to outlive your terminal, and they persist differently:
+#   * the VM        — owned by multipassd (a snap SYSTEM service), so it is
+#                     already independent of any shell; it just needs starting
+#                     again after a host reboot.
+#   * the bridge    — a systemd --user service. Immune to closing a terminal,
+#                     but WITHOUT linger it is killed at logout and does not
+#                     come back until you log in. `autostart on` enables linger.
+#   * the warden    — a root SYSTEM service; already survives both.
+# Inside the VM, the Hermes gateway is a --user service with linger already on,
+# so the bot comes back whenever the VM boots.
+cmd_autostart() {
+  local unit="$UNIT_DIR/kagebox-autostart.service"
+  case "${1:-status}" in
+    on)
+      # Linger is the load-bearing bit: without it, --user services die at
+      # logout and never start at boot, no matter what is 'enabled'.
+      if [ "$(loginctl show-user "$USER" --property=Linger --value 2>/dev/null)" != "yes" ]; then
+        loginctl enable-linger "$USER" 2>/dev/null \
+          || sudo loginctl enable-linger "$USER" \
+          || die "could not enable linger — user services will still die at logout"
+      fi
+      mkdir -p "$UNIT_DIR"
+      sed -e "s|__KAGEBOX_DIR__|${HERE}|g" "$HERE/bridge/kagebox-autostart.service" > "$unit"
+      systemctl --user daemon-reload
+      systemctl --user enable kagebox-autostart.service >/dev/null 2>&1 \
+        || die "could not enable the autostart unit"
+      msg "autostart ON — VM + bridge come back after logout and reboot."
+      cmd_autostart status ;;
+    off)
+      systemctl --user disable --now kagebox-autostart.service >/dev/null 2>&1 || true
+      rm -f "$unit"; systemctl --user daemon-reload
+      msg "autostart OFF (linger left enabled; disable with: loginctl disable-linger $USER)" ;;
+    status)
+      echo "linger (user services survive logout): $(loginctl show-user "$USER" --property=Linger --value 2>/dev/null || echo unknown)"
+      echo "autostart unit:  $(systemctl --user is-enabled kagebox-autostart.service 2>/dev/null || echo 'not installed')"
+      echo "bridge:          $(systemctl --user is-enabled kagebox-bridge.service 2>/dev/null || echo '?') / $(systemctl --user is-active kagebox-bridge.service 2>/dev/null || echo '?')"
+      # `is-enabled` prints "not-found" AND exits non-zero, so map it explicitly
+      # rather than letting both the output and the fallback print.
+      local w; w="$(systemctl is-enabled kagebox-warden.service 2>/dev/null || true)"
+      echo "warden:          ${w:-unknown}$([ "$w" = not-found ] && echo '  (run: ./kagebox warden setup)')"
+      echo "multipassd:      $(systemctl is-enabled snap.multipass.multipassd.service 2>/dev/null || echo '?') / $(systemctl is-active snap.multipass.multipassd.service 2>/dev/null || echo '?')" ;;
+    *) echo "usage: kagebox autostart {on|off|status}" ;;
+  esac
+}
+
 cmd_telegram() {
   vm_exists || die "VM not up; run ./kagebox up"
   cat <<'INTRO'
@@ -862,6 +909,7 @@ case "${1:-}" in
   skills) shift; cmd_skills "$@" ;;
   research) shift; cmd_research "$@" ;;
   warden) shift; cmd_warden "$@" ;;
+  autostart) shift; cmd_autostart "$@" ;;
   backup) cmd_backup ;;
   restore) cmd_restore ;;
   egress) shift; cmd_egress "$@" ;;
