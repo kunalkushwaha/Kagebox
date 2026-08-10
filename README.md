@@ -1,4 +1,13 @@
-# Kagebox
+```
+┌──────────────────────────────────────┐
+│  █  █  ██   ███ ████ ███   ██  █  █  │
+│  █ █  █  █ █    █    █  █ █  █ █  █  │
+│  ██   ████ █ ██ ███  ███  █  █  ██   ┤──▪
+│  █ █  █  █ █  █ █    █  █ █  █ █  █  │
+│  █  █ █  █  ███ ████ ███   ██  █  █  │
+└──────────────────────────────────────┘
+      a desk, not your keys
+```
 
 > **Run autonomous AI agents safely** — isolated microVM, host-side credentials, controllable egress, auditable.
 
