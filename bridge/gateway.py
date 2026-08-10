@@ -629,8 +629,12 @@ class Handler(BaseHTTPRequestHandler):
             req = json.loads(raw.decode() or "{}")
         except Exception:
             return self._fail(400, "gateway: invalid JSON for /egress/request")
+        # Relay only; the warden validates. We pass destinations through so the
+        # human sees WHAT is being asked for, not just that something was.
         payload = json.dumps({"reason": str(req.get("reason", ""))[:300],
-                              "seconds": req.get("seconds", 60)}) + "\n"
+                              "seconds": req.get("seconds", 60),
+                              "destinations": req.get("destinations", []),
+                              "scope": req.get("scope", "")}) + "\n"
         try:
             s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             s.settimeout(WARDEN_TIMEOUT)

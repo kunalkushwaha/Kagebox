@@ -116,10 +116,25 @@ can't also be the credential guarding the door. Windows are capped (60s default,
 max, 8/hour) and always close: monotonic deadline in a `finally`, signal handlers, an
 on-disk marker re-checked at startup, and systemd `ExecStopPost`.
 
-> **Honest limit:** while a window is open the *whole VM* has internet, not just the
-> search — a bounded window, not a narrow channel. And the reason shown to you is
-> written by the guest, so approve on whether you *expected* the request, not on how
-> good the reason reads. See [SECURITY.md](SECURITY.md).
+Requests name **destinations**, so the prompt says something you can actually judge:
+
+```
+🔓 Sandbox is asking for network access
+Scope: duckduckgo.com:443
+Duration: 60s
+Reason (written by the AGENT — untrusted): web search for the user
+```
+
+The *host* resolves those names — the guest never supplies an address — and only those
+`(ip, port)` pairs are granted, into a separate nft set carrying a **kernel-side
+timeout**. The egress table stays up throughout: containment is *narrowed* for the
+window, not suspended, and the grant expires even if the warden is killed `-9`.
+
+> **Honest limits:** a whole-VM window is still available but must be asked for
+> explicitly (`--all`) and is labelled as such where you approve it. Scoped grants are
+> IP-based once resolved, so CDN fronting applies just as it does to the standing
+> allowlist. And the reason is written by the guest — approve on whether you *expected*
+> the request, not on how good the reason reads. See [SECURITY.md](SECURITY.md).
 
 ## Staying up
 

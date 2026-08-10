@@ -677,18 +677,37 @@ warden_install_helper() {
   multipass exec "$VM_NAME" -- env GW="$gw" PORT="$BRIDGE_PORT" bash -lc '
     sudo tee /usr/local/bin/kagebox-web >/dev/null <<EOF
 #!/usr/bin/env bash
-# Ask the host for a time-boxed internet window. The host decides; you cannot.
-# usage: kagebox-web [seconds] "<why you need the web>"
+# Ask the host for a time-boxed window to specific destinations. The host
+# decides; you cannot. Name the hosts you need — a vague ask is refused, and
+# only an explicit --all requests the (much bigger) whole-VM window.
+#
+# usage: kagebox-web [-t SECS] <host[:ports]> [host...] -- "<why>"
+#        kagebox-web --all -t 60 -- "<why>"
 set -u
-SECS="\${1:-60}"; shift 2>/dev/null || true; REASON="\${*:-web access}"
-case "\$SECS" in ""|*[!0-9]*) REASON="\$SECS \$REASON"; SECS=60 ;; esac
-echo "requesting \${SECS}s of web access from the host (waiting for approval)..." >&2
-python3 - "\$SECS" "\$REASON" <<PY
+SECS=60; DESTS=(); REASON=""; ALL=0
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    -t|--seconds) SECS="\${2:-60}"; shift 2 ;;
+    --all)        ALL=1; shift ;;
+    --)           shift; REASON="\$*"; break ;;
+    *)            DESTS+=("\$1"); shift ;;
+  esac
+done
+[ -n "\$REASON" ] || REASON="web access"
+if [ "\$ALL" = 0 ] && [ \${#DESTS[@]} -eq 0 ]; then
+  echo "usage: kagebox-web [-t SECS] <host[:ports]>... -- \"<why>\"" >&2
+  echo "   eg: kagebox-web -t 60 duckduckgo.com:443 -- \"web search for the user\"" >&2
+  exit 2
+fi
+echo "asking the host for \${SECS}s -> \${DESTS[*]:-ALL} (waiting for approval)..." >&2
+python3 - "\$SECS" "\$REASON" "\$ALL" "\${DESTS[@]:-}" <<PY
 import json,sys,urllib.request
-secs,reason=sys.argv[1],sys.argv[2]
+secs,reason,allflag=sys.argv[1],sys.argv[2],sys.argv[3]
+dests=[d for d in sys.argv[4:] if d]
+body={"seconds":int(secs),"reason":reason,"destinations":dests}
+if allflag=="1": body["scope"]="all"
 req=urllib.request.Request("http://${GW}:${PORT}/egress/request",
-    data=json.dumps({"seconds":int(secs),"reason":reason}).encode(),
-    headers={"content-type":"application/json"})
+    data=json.dumps(body).encode(), headers={"content-type":"application/json"})
 try:
     r=json.loads(urllib.request.urlopen(req,timeout=480).read().decode())
 except Exception as e:
