@@ -16,6 +16,8 @@
 #   ./kagebox providers   list backends + cloud AI providers (bridge/providers.json)
 #   ./kagebox telegram    set up a Telegram bot to chat with Hermes from your phone
 #   ./kagebox gateway ... manage the messaging gateway (status|start|stop|restart|run)
+#   ./kagebox skills ...  install/search/manage Hermes skills
+#                         (opens egress just for the fetch, then re-seals)
 #   ./kagebox backup      snapshot Hermes memory/state to the host (survives VM loss)
 #   ./kagebox restore     restore Hermes memory/state from the host backup
 #   ./kagebox egress ...  host-enforced egress allowlist for the VM (on|off|status|refresh)
@@ -458,6 +460,47 @@ cmd_gateway() {
   multipass exec "$VM_NAME" -- bash -lc "export XDG_RUNTIME_DIR=/run/user/\$(id -u); hermes gateway ${*:-status}"
 }
 
+# Install/manage Hermes skills. Skills come from open-ended, CDN-fronted
+# registries (skills.sh, GitHub, ClawHub, PyPI/npm for their deps) — exactly the
+# hosts an IP allowlist cannot pin reliably (rotating CDN IPs) and cannot
+# enumerate (any registry, any repo). So instead of poking permanent holes in
+# the allowlist, we open the door for the duration of a *fetch*, then re-seal —
+# a deliberate, user-initiated window, re-sealed even on Ctrl-C.
+cmd_skills() {
+  vm_exists || die "run ./kagebox setup first (need the sandbox VM)"
+  multipass info "$VM_NAME" 2>/dev/null | grep -q Running \
+    || { msg "starting $VM_NAME..."; multipass start "$VM_NAME"; ensure_mount; bridge_start >/dev/null 2>&1; }
+  [ "$#" -eq 0 ] && set -- list
+  # Ops that only touch already-installed skills need no network — don't open
+  # the door (or ask for sudo) for those.
+  local need_net=1
+  case "$1" in
+    list|config|uninstall|reset|opt-in|opt-out|list-modified|diff|help|-h|--help) need_net=0 ;;
+  esac
+  local was_contained=0; [ -f /etc/cron.d/kagebox-egress ] && was_contained=1
+  local opened=0
+  reseal() {
+    [ "$opened" = 1 ] || return 0
+    opened=0
+    msg "re-sealing egress (back to contained)..."
+    # keep stderr: if the sudo timestamp expired during a long install, the
+    # password prompt must be visible rather than swallowed into a silent hang.
+    cmd_egress on >/dev/null || warn "FAILED to re-seal egress — run './kagebox egress on' NOW to re-contain."
+  }
+  if [ "$need_net" = 1 ] && [ "$was_contained" = 1 ]; then
+    warn "'$1' fetches from CDN-fronted skill/package registries an IP allowlist can't cover. Opening egress for this operation only — the VM has full internet until it finishes, then it re-seals."
+    trap 'reseal' EXIT INT TERM
+    cmd_egress off >/dev/null || die "could not open egress (sudo declined?) — a skill fetch needs network; nothing changed."
+    opened=1
+  fi
+  msg "hermes skills $* (in $VM_NAME)"
+  multipass exec "$VM_NAME" -- bash -lc 'export XDG_RUNTIME_DIR=/run/user/$(id -u); hermes skills "$@"' kagebox-skills "$@"
+  local rc=$?
+  reseal
+  trap - EXIT INT TERM
+  return "$rc"
+}
+
 cmd_telegram() {
   vm_exists || die "VM not up; run ./kagebox up"
   cat <<'INTRO'
@@ -649,6 +692,7 @@ case "${1:-}" in
   providers|backends) cmd_providers ;;
   telegram) cmd_telegram ;;
   gateway) shift; cmd_gateway "$@" ;;
+  skills) shift; cmd_skills "$@" ;;
   backup) cmd_backup ;;
   restore) cmd_restore ;;
   egress) shift; cmd_egress "$@" ;;

@@ -27,3 +27,16 @@
 # security.ubuntu.com
 # pypi.org
 # registry.npmjs.org
+#
+# Installing Hermes SKILLS pulls from open-ended, CDN-fronted registries
+# (skills.sh, GitHub, ClawHub, plus PyPI/npm for their deps). Pinning these by IP
+# is unreliable — the CDN hands out rotating addresses this list can't follow —
+# so prefer `./kagebox skills install <name>`, which opens egress just for the
+# fetch and then re-seals. Uncomment below only for best-effort persistent access:
+# skills.sh
+# github.com
+# api.github.com
+# raw.githubusercontent.com
+# codeload.github.com
+# objects.githubusercontent.com
+# files.pythonhosted.org
