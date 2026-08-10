@@ -153,7 +153,20 @@ vm_provision() {
   multipass transfer "$HERE/vm/restore-state.sh" "$VM_NAME:/home/ubuntu/restore-state.sh"
   multipass exec "$VM_NAME" -- \
     env BRIDGE_PORT="$BRIDGE_PORT" HERMES_MODEL="$HERMES_MODEL_NAME" HERMES_NUM_CTX="$HERMES_NUM_CTX" \
+        HERMES_INSTALLER_SHA256="${HERMES_INSTALLER_SHA256:-}" \
     bash /home/ubuntu/provision.sh
+  # Pull the guest-side provenance out to the host and add the image identity,
+  # which only the host knows (#17).
+  local prov="$HERE/${STATE_DIR:-hermes-state}/provenance.txt"
+  mkdir -p "$(dirname "$prov")"
+  {
+    multipass exec "$VM_NAME" -- cat /home/ubuntu/.kagebox-provenance 2>/dev/null || true
+    echo "vm_image_requested=$VM_IMAGE"
+    multipass info "$VM_NAME" 2>/dev/null | awk -F': *' '/^Image/{print "vm_image_actual="$2}'
+    echo "multipass_version=$(multipass version 2>/dev/null | awk '/^multipass /{print $2; exit}')"
+    echo "kagebox_commit=$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  } > "$prov" 2>/dev/null || true
+  msg "build provenance recorded -> $prov"
 }
 
 vm_backend() {
@@ -421,6 +434,11 @@ cmd_status() {
   echo "== VM =="; multipass info "$VM_NAME" 2>/dev/null | sed -n '1,10p' || echo "no VM"
   echo; echo "== bridge =="; bridge_status; echo "bridge IP: $(bridge_ip 2>/dev/null || echo n/a):${BRIDGE_PORT}"
   echo; echo "== host ollama =="; curl -s --max-time 3 http://127.0.0.1:11434/api/version || echo "ollama not answering"
+  # What this sandbox actually is — recorded at provision time (#17).
+  local prov="$HERE/${STATE_DIR:-hermes-state}/provenance.txt"
+  echo; echo "== build provenance =="
+  if [ -f "$prov" ]; then sed 's/^/  /' "$prov"
+  else echo "  (none recorded — re-run ./kagebox provision to capture it)"; fi
 }
 cmd_shell() { multipass shell "$VM_NAME"; }
 cmd_destroy() {

@@ -33,10 +33,49 @@ echo "   bridge OK: $(curl -fsS "${BASE}/models" | head -c 120)..."
 
 if ! command -v hermes >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/hermes" ]; then
   echo "==> Installing Hermes Agent (Python 3.11 + Node + browser tools; this takes a few minutes)..."
-  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+  # Download, then run — rather than piping straight into a shell (#17). This
+  # runs INSIDE the contained VM, and a hostile agent is what the whole design
+  # assumes, so the security gain over `curl | bash` is modest. The real win is
+  # knowing WHAT we ran: the script is kept, hashed, and recorded, so a sandbox
+  # can be described after the fact and two builds can be compared.
+  #
+  # Set HERMES_INSTALLER_SHA256 to pin it: a mismatch aborts instead of
+  # installing something other than what was reviewed.
+  installer="$HOME/.kagebox-hermes-install.sh"
+  curl -fsSL --retry 3 --max-time 120 https://hermes-agent.nousresearch.com/install.sh -o "$installer" \
+    || { echo "!! could not download the Hermes installer" >&2; exit 1; }
+  got_sha="$(sha256sum "$installer" | awk '{print $1}')"
+  echo "   installer sha256: $got_sha"
+  if [ -n "${HERMES_INSTALLER_SHA256:-}" ]; then
+    if [ "$got_sha" != "$HERMES_INSTALLER_SHA256" ]; then
+      echo "!! installer sha256 MISMATCH" >&2
+      echo "   expected: $HERMES_INSTALLER_SHA256" >&2
+      echo "   got:      $got_sha" >&2
+      echo "   refusing to run it. Review the change, then update HERMES_INSTALLER_SHA256." >&2
+      exit 1
+    fi
+    echo "   sha256 matches the pin — proceeding"
+  else
+    echo "   (unpinned: set HERMES_INSTALLER_SHA256=$got_sha in kagebox.env to pin this exact installer)"
+  fi
+  bash "$installer"
 else
   echo "==> Hermes Agent already installed, skipping installer."
 fi
+
+# Record what this sandbox actually IS, so it can be described later: which
+# agent version, from which installer, on which image, when. Without this,
+# "which Hermes was that?" is unanswerable after the fact — which matters for
+# reproducibility, rollback and incident response far more than for hardening.
+{
+  echo "provisioned_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "hermes_version=$( (hermes --version 2>/dev/null || "$HOME/.local/bin/hermes" --version 2>/dev/null || echo unknown) | head -1 | tr -d '\r')"
+  echo "hermes_installer_sha256=${got_sha:-reused-existing-install}"
+  echo "os=$( (. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME") || echo unknown)"
+  echo "kernel=$(uname -r)"
+  echo "python=$(python3 --version 2>&1 | awk '{print $2}')"
+} > "$HOME/.kagebox-provenance" 2>/dev/null || true
+echo "==> Recorded build provenance -> ~/.kagebox-provenance"
 
 # Restore prior memory/state from the host backup (if any) before configuring,
 # so a rebuilt VM keeps Hermes' memory, sessions, and settings.
