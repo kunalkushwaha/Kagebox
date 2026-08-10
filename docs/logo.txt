@@ -1,0 +1,20 @@
+┌──────────────────────────────────────┐
+│  █  █  ██   ███ ████ ███   ██  █  █  │
+│  █ █  █  █ █    █    █  █ █  █ █  █  │
+│  ██   ████ █ ██ ███  ███  █  █  ██   ┤──▪
+│  █ █  █  █ █  █ █    █  █ █  █ █  █  │
+│  █  █ █  █  ███ ████ ███   ██  █  █  │
+└──────────────────────────────────────┘
+      a desk, not your keys
+
+--- compact (CLI headers) ---
+┌─────────┐
+│ kagebox ┤──▪
+└─────────┘
+
+--- tiny (prefixes, prompts) ---
+[ ]┤▪
+
+The latch is drawn OUTSIDE the wall. That is the design in one glyph: the thing
+inside the box cannot reach the thing holding it shut. Keep it that way — a
+latch drawn inside the box would be a different (and false) claim.
