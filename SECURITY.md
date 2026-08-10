@@ -108,12 +108,25 @@ bound the blast radius.
   window closes on a monotonic deadline in a `finally`, backed by signal
   handlers, an on-disk marker re-checked at startup, and systemd
   `ExecStopPost` — a warden killed mid-window re-seals on restart.
-  **Residual:** while a window is open the **whole VM** has open internet, not
-  just the agent's search — it is a bounded window, not a narrow channel. And
-  the `reason` shown to you is written by the guest, so a prompt-injected agent
-  can word it persuasively; it is displayed as untrusted plain text, never
-  markup, but *approve on whether you expected the request, not on how good the
-  reason sounds.* Approval fatigue is the attack this cap exists to blunt.
+  **Windows are scoped to named destinations.** A request names hosts
+  (`github.com:443`), the **host** resolves them — the guest never supplies an
+  address, so it cannot point a trusted name at an internal one — and only
+  those `(ip, port)` pairs are granted, into a *separate* nft set so the refresh
+  timer cannot wipe a live window and a grant is never mistaken for permanent
+  policy. The egress table stays **up** throughout: containment is narrowed for
+  the window, not suspended. Grants carry a **kernel-side timeout**, so the
+  window closes even if the warden is killed `-9`. Destination strings cross
+  into a root-run script, so they are matched against an allowlisted charset
+  (never escaped) and passed as separate argv elements. A vague or malformed
+  request is **refused**, never silently upgraded — a whole-VM window requires
+  an explicit `scope: "all"`, and is labelled as such where you approve it.
+  **Residual:** an explicit full-VM window still opens everything for its
+  duration. Scoped windows are still IP-based once resolved, so CDN fronting
+  applies exactly as it does to the standing allowlist. And the `reason` shown
+  to you is written by the guest, so a prompt-injected agent can word it
+  persuasively; it is displayed as untrusted plain text, never markup, but
+  *approve on whether you expected the request, not on how good the reason
+  sounds.* Approval fatigue is the attack the rate cap exists to blunt.
 - **The shared `workspace/` folder is a two-way door.** Anything you put there is
   readable by the agent; anything it writes there lands on your host. Don't put
   secrets in `workspace/`.

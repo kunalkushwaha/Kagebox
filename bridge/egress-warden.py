@@ -81,6 +81,10 @@ MIN_SECONDS = 10
 MAX_PER_HOUR = 8            # approval fatigue is an attack; keep prompts rare
 APPROVAL_TIMEOUT = 120      # how long we wait for a human tap before denying
 REASON_MAX = 300            # truncate guest text before it reaches your screen
+MAX_DESTS = 8               # a request you cannot read is a request you cannot judge
+# Destinations are `hostname[:port[,port...]]`. Allowlisted charset, not escaped:
+# these strings cross from the sandbox into a root-run script.
+DEST_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5}(,[0-9]{1,5})*)?$")
 
 TG_API = "https://api.telegram.org/bot{token}/{method}"
 
@@ -146,7 +150,7 @@ def drain_updates():
 _offset = 0
 
 
-def ask_human(reason, seconds, nonce):
+def ask_human(reason, seconds, nonce, dests=(), full=False):
     """Post the request and block until someone with authority answers.
 
     Returns True only on an explicit approve, from an allowed user id, matching
@@ -161,15 +165,25 @@ def ask_human(reason, seconds, nonce):
     # Guest-authored text, shown to a human. Strip control chars, truncate, and
     # send WITHOUT parse_mode so markup in it cannot dress the message up.
     clean = re.sub(r"[\x00-\x1f\x7f]", " ", reason)[:REASON_MAX].strip() or "(no reason given)"
+    if full:
+        scope_line = ("⚠️ Scope: THE ENTIRE VM — every process in the sandbox "
+                      "reaches the whole internet for this long.")
+        button = f"⚠️ Open ALL {seconds}s"
+    else:
+        # The destinations are the part you can actually judge, so they lead —
+        # and they are host-resolved names, not anything the guest asserted.
+        scope_line = "Scope: " + ", ".join(dests)
+        button = f"✅ Allow {seconds}s"
     text = (
-        "🔓 Sandbox is asking for the internet\n\n"
-        f"Duration: {seconds}s\n"
+        "🔓 Sandbox is asking for network access\n\n"
+        f"{scope_line}\n"
+        f"Duration: {seconds}s\n\n"
         f"Reason (written by the AGENT — untrusted):\n{clean}\n\n"
-        "While open, the WHOLE VM can reach the web. Approve only if you "
-        "expected this."
+        "Approve based on whether you EXPECTED this request, not on how good "
+        "the reason sounds."
     )
     kb = {"inline_keyboard": [[
-        {"text": f"✅ Open {seconds}s", "callback_data": f"ok:{nonce}"},
+        {"text": button, "callback_data": f"ok:{nonce}"},
         {"text": "❌ Deny", "callback_data": f"no:{nonce}"},
     ]]}
 
@@ -230,10 +244,14 @@ def _edit(sent, text):
 
 # --- the door ----------------------------------------------------------------
 
-def egress(action):
-    """Drive the authoritative host-side control. Returns True on success."""
+def egress(action, *args):
+    """Drive the authoritative host-side control. Returns True on success.
+
+    args are passed as separate argv elements — never through a shell — so a
+    guest-authored hostname cannot become a command.
+    """
     try:
-        p = subprocess.run(["bash", EGRESS_SH, action],
+        p = subprocess.run(["bash", EGRESS_SH, action, *[str(a) for a in args]],
                            capture_output=True, text=True, timeout=120)
         if p.returncode != 0:
             log(f"host-egress.sh {action} failed rc={p.returncode}: "
@@ -261,8 +279,37 @@ def seal(why=""):
     return ok
 
 
+def open_scoped(seconds, dests):
+    """Grant specific destinations for `seconds` (#13).
+
+    The egress table stays UP throughout — we add elements to a dedicated set
+    rather than dropping containment. The elements carry a kernel-side timeout,
+    so the grant expires on its own even if this process dies mid-window. We
+    still revoke on the way out, but that is tidiness, not the safety net.
+    """
+    if not egress("grant", seconds, *dests):
+        return False, "could not apply the grant (resolution or nft failed) — nothing changed"
+    log(f"scoped window OPEN {seconds}s -> {' '.join(dests)}")
+    try:
+        deadline = time.monotonic() + seconds
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                break
+            time.sleep(min(left, 1.0))
+    finally:
+        egress("revoke")
+        log("scoped window closed (grants revoked; kernel would have expired them anyway)")
+    return True, f"granted {', '.join(dests)} for {seconds}s"
+
+
 def open_window(seconds, reason):
-    """Open egress for `seconds`, then close it no matter how we leave."""
+    """Open the WHOLE VM's egress for `seconds`, then close it however we leave.
+
+    The blunt instrument, kept only for explicitly-requested full windows. The
+    table comes down, so the marker/seal machinery is what closes it again.
+    Prefer open_scoped().
+    """
     global _window_until
     with open(MARKER, "w") as fh:
         fh.write(json.dumps({"reason": reason[:REASON_MAX], "seconds": seconds,
@@ -274,7 +321,7 @@ def open_window(seconds, reason):
             pass
         return False, "could not open egress (nft failed) — nothing changed"
     _window_until = time.monotonic() + seconds
-    log(f"window OPEN for {seconds}s — reason: {reason[:120]!r}")
+    log(f"FULL window OPEN for {seconds}s — reason: {reason[:120]!r}")
     try:
         while True:
             left = _window_until - time.monotonic()
@@ -295,6 +342,28 @@ def rate_ok():
     return len(_grants) < MAX_PER_HOUR
 
 
+def clean_destinations(raw):
+    """Validate guest-supplied destinations. Anything odd is dropped, not fixed.
+
+    These strings cross from the sandbox into a root-run script, so the charset
+    is allowlisted rather than escaped. Note we pass NAMES, never addresses: the
+    host resolves them itself, so the guest cannot point "github.com" at
+    10.0.0.5 and have us believe it.
+    """
+    out = []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return out
+    for d in raw[:MAX_DESTS]:
+        d = str(d).strip()
+        if len(d) > 255 or not DEST_RE.match(d):
+            log(f"rejecting malformed destination {d[:60]!r}")
+            continue
+        out.append(d)
+    return out
+
+
 def handle(req):
     """One request, start to finish. Every failure path denies."""
     reason = str(req.get("reason", ""))[:REASON_MAX]
@@ -303,6 +372,16 @@ def handle(req):
     except Exception:
         seconds = DEFAULT_SECONDS
     seconds = max(MIN_SECONDS, min(MAX_SECONDS, seconds))
+    dests = clean_destinations(req.get("destinations", []))
+    # A full-VM window is a much bigger ask, so it must be requested outright —
+    # an empty/garbled destination list is never silently upgraded to "open
+    # everything". That was the residual in the first cut of the warden.
+    full = (str(req.get("scope", "")).lower() == "all")
+    if not dests and not full:
+        return {"granted": False,
+                "detail": "no valid destinations given. Ask for specific hosts, "
+                          "e.g. {\"destinations\":[\"github.com:443\"]}, or set "
+                          "scope=\"all\" to request a full-VM window."}
 
     if not _lock.acquire(blocking=False):
         return {"granted": False, "detail": "a window is already open or pending"}
@@ -311,12 +390,17 @@ def handle(req):
             log("rate limit hit — denying without prompting")
             return {"granted": False,
                     "detail": f"rate limit: max {MAX_PER_HOUR} windows/hour"}
-        log(f"request: {seconds}s — {reason[:120]!r}")
-        if not ask_human(reason, seconds, nonce=f"{int(time.time())}-{os.urandom(4).hex()}"):
+        log(f"request: {seconds}s {'FULL-VM' if full else ' '.join(dests)} — {reason[:120]!r}")
+        nonce = f"{int(time.time())}-{os.urandom(4).hex()}"
+        if not ask_human(reason, seconds, nonce, dests, full):
             return {"granted": False, "detail": "denied (or no answer in time)"}
         _grants.append(time.monotonic())
-        ok, detail = open_window(seconds, reason)
-        return {"granted": ok, "detail": detail, "seconds": seconds}
+        if full:
+            ok, detail = open_window(seconds, reason)
+        else:
+            ok, detail = open_scoped(seconds, dests)
+        return {"granted": ok, "detail": detail, "seconds": seconds,
+                "destinations": dests, "scope": "all" if full else "scoped"}
     finally:
         _lock.release()
 

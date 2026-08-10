@@ -47,6 +47,8 @@ case "$PORT"  in ''|*[!0-9]*)          die "BRIDGE_PORT must be numeric (got '$P
 case "$IFACE" in ''|*[!A-Za-z0-9._-]*) die "BRIDGE_IFACE has invalid characters (got '$IFACE')";; esac
 
 GW="$(ip -4 -o addr show dev "$IFACE" 2>/dev/null | awk '{print $4; exit}' | cut -d/ -f1)"
+# Scratch variables used by the `grant` action (this script runs with `set -u`).
+secs=""; elems=""; granted=""; spec=""; gh=""; gp=""; gips=""; gip=""; gport=""
 
 # --- allowlist resolution --------------------------------------------------
 # Resolve via the SAME resolver the guest uses (multipass dnsmasq on the bridge
@@ -126,6 +128,15 @@ add table $TABLE
 delete table $TABLE
 table $TABLE {
   set allow4 { type ipv4_addr . inet_service; }
+  # Temporary, human-approved grants (#13). Separate from allow4 so the refresh
+  # timer — which flushes and repopulates allow4 — cannot wipe a live window,
+  # and so a grant can never be mistaken for permanent policy.
+  #
+  # `flags timeout` puts expiry in the KERNEL: each element carries its own
+  # lifetime and the kernel drops it when it runs out. The window therefore
+  # closes even if the warden is killed -9, the host is under load, or userspace
+  # never runs again. That is a stronger guarantee than any `finally` block.
+  set grant4 { type ipv4_addr . inet_service; flags timeout; }
 
   # --- guest -> beyond-host (routed/NAT'd): the containment control ---------
   chain forward {
@@ -139,6 +150,9 @@ table $TABLE {
     # on a port that was not asked for falls through to the drop below.
     ip daddr . tcp dport @allow4 accept
     ip daddr . udp dport @allow4 accept
+    # Approved, self-expiring windows (#13).
+    ip daddr . tcp dport @grant4 accept
+    ip daddr . udp dport @grant4 accept
     # Non-allowlisted egress is dropped. The set is IPv4-only, so IPv6 NEW
     # packets never match the accept above and fall through to drop here (#8) —
     # no v6 path around the v4 allowlist.
@@ -209,6 +223,55 @@ case "$ACTION" in
     install_cron
     echo "host egress ON — iface '$IFACE' may reach: bridge (tcp/$PORT) + DNS/DHCP on the host, and $(set_count) allowlisted destination:port pair(s) from $(basename "$ALLOWFILE"). All other egress DROPPED (host-enforced; the guest cannot remove it)."
     ;;
+  grant)
+    # grant <seconds> <host[:ports]> [host[:ports]...]   (#13)
+    # Open specific destinations for a bounded time instead of taking the whole
+    # table down. Called by the warden AFTER a human approved the request.
+    #
+    # The hostnames originate in the sandbox, so they are treated as hostile
+    # input: each is matched against a strict charset before it goes anywhere
+    # near a resolver, and we resolve them HERE — the guest never supplies an
+    # IP, so it cannot name 10.0.0.5 and call it "github.com".
+    secs="${2:-}"; shift 2 2>/dev/null || true
+    case "$secs" in ''|*[!0-9]*) die "grant: first argument must be seconds" ;; esac
+    [ "$secs" -ge 1 ] && [ "$secs" -le 3600 ] || die "grant: seconds out of range (1-3600)"
+    [ $# -gt 0 ] || die "grant: no destinations given"
+    nft list table $TABLE >/dev/null 2>&1 || die "grant: egress table not loaded — refusing (run 'egress on' first)"
+    elems=""; granted=""
+    for spec in "$@"; do
+      case "$spec" in
+        *[!A-Za-z0-9.:,-]*) echo "host-egress: WARNING: rejecting malformed destination '$spec'" >&2; continue ;;
+      esac
+      case "$spec" in
+        *:*) gh="${spec%%:*}"; gp="${spec#*:}" ;;
+        *)   gh="$spec";       gp="$DEFAULT_PORTS" ;;
+      esac
+      [ -n "$gh" ] || continue
+      gips=$(resolve_one "$gh")
+      [ -z "$gips" ] && { echo "host-egress: WARNING: grant: '$gh' did not resolve — skipped" >&2; continue; }
+      for gip in $gips; do
+        for gport in $(echo "$gp" | tr ',' ' '); do
+          case "$gport" in ''|*[!0-9]*) continue ;; esac
+          [ "$gport" -ge 1 ] 2>/dev/null && [ "$gport" -le 65535 ] 2>/dev/null || continue
+          elems="$elems${elems:+, }$gip . $gport timeout ${secs}s"
+          granted="$granted $gh:$gport"
+        done
+      done
+    done
+    [ -n "$elems" ] || die "grant: nothing resolved to grant — nothing changed"
+    nft add element $TABLE grant4 "{ $elems }" || die "grant: could not add elements"
+    echo "host egress: GRANTED for ${secs}s ->$granted (kernel-expiring; the table stayed up)"
+    ;;
+  revoke)
+    # Drop every live grant immediately (early close / shutdown). Grants also
+    # expire on their own, so this is a courtesy, not the safety mechanism.
+    nft list table $TABLE >/dev/null 2>&1 || exit 0
+    nft flush set $TABLE grant4 2>/dev/null || true
+    echo "host egress: all temporary grants revoked"
+    ;;
+  grants)
+    nft list set $TABLE grant4 2>/dev/null | grep -oE 'elements = \{.*' || echo "no active grants"
+    ;;
   boot)
     # Boot-time restore (#12). Runs from kagebox-egress.service, ordered BEFORE
     # multipassd, so containment is in force before the VM can pass a packet.
@@ -257,5 +320,5 @@ case "$ACTION" in
       echo "host egress: OFF (VM has open internet)"
     fi
     ;;
-  *) echo "usage: host-egress.sh {on|off|boot|refresh|status}" >&2; exit 1 ;;
+  *) echo "usage: host-egress.sh {on|off|boot|refresh|status|grant <secs> <host[:ports]>...|revoke|grants}" >&2; exit 1 ;;
 esac
