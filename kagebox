@@ -899,8 +899,17 @@ cmd_usage() {
   python3 - "$f" <<'PY'
 import sys, json, collections
 # rough USD per 1M tokens (input, output) — APPROXIMATE, edit freely. Local ollama = free.
-PRICES = {"gemini": (0.075, 0.30), "openrouter": (1.0, 3.0),
-          "anthropic": (3.0, 15.0), "claude": (3.0, 15.0), "ollama": (0.0, 0.0)}
+# Prices live in providers.json (one source of truth, shared with the bridge's
+# budget enforcement) — these are only the fallback for routes not defined there.
+PRICES = {"claude": (3.0, 15.0), "ollama": (0.0, 0.0)}
+try:
+    import os as _os
+    _pj = _os.path.join(_os.path.dirname(_os.path.abspath(sys.argv[1])), "..", "bridge", "providers.json")
+    for _n, _p in (json.load(open(_pj)).get("providers") or {}).items():
+        _pr = _p.get("price_per_mtok") or {}
+        PRICES[_n] = (float(_pr.get("in", 0) or 0), float(_pr.get("out", 0) or 0))
+except Exception:
+    pass
 agg = collections.defaultdict(lambda: [0, 0, 0])
 for line in open(sys.argv[1]):
     try: e = json.loads(line)
@@ -915,7 +924,8 @@ for (route, model), (i, o, c) in sorted(agg.items()):
     print("%-11s %-26s %6d %10d %10d %8.3f" % (route, model[:26], c, i, o, cost))
 print("-" * 74)
 print("%-11s %-26s %6s %10d %10d %8.3f" % ("TOTAL", "", "", ti, to, tc))
-print("(prices approximate — edit PRICES in ./kagebox; streamed calls without usage aren't counted)")
+print("(prices approximate — edit price_per_mtok in bridge/providers.json, which also")
+print(" drives the bridge's spend caps; streamed calls without usage aren't counted)")
 PY
 }
 

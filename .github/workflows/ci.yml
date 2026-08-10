@@ -47,6 +47,9 @@ jobs:
       - name: Warden scoping (guest can ask, never grant; no silent full-VM windows)
         run: python3 tests/test_warden_scope.py
 
+      - name: Spend budgets (a compromised agent cannot spend without limit)
+        run: python3 tests/test_budget.py
+
       - name: Validate egress rulesets (nft syntax)
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq nftables

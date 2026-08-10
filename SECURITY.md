@@ -138,6 +138,18 @@ bound the blast radius.
   poisoned `package.json` / `requirements.txt` / lockfile you install. The VM
   boundary holds; you are the transport. **Review diffs before running, installing,
   or opening `workspace/` contents in an auto-executing editor.**
+- **The guest can't hold your keys, but it can still spend them — so the bridge
+  caps that.** The VM bounds CPU, memory and disk by construction (a runaway
+  agent wrecks its own sandbox, which is containment working); money is the one
+  resource that escapes the box. Every paid route is capped per hour, per day,
+  and by estimated daily cost, configured per provider in
+  `bridge/providers.json` (`budget` and `price_per_mtok`; `0` = unlimited).
+  Exhaustion returns **429**. Counters are seeded from the usage log at startup,
+  so restarting the bridge does not hand back a fresh day's budget. **Residual:**
+  token counts are only knowable *after* a response, so the call that crosses
+  the line still completes — the cap bounds the bleeding, it does not predict
+  it. Costs are estimates from a local price table; the provider's bill is
+  authoritative.
 - **The `/claude` route spends your quota, on the guest's instructions.** The
   prompts come from the sandbox; the host pays for them. Tools and MCP servers
   are suppressed, so this is a cost and a prompt-privacy exposure rather than an
