@@ -57,6 +57,12 @@ bound the blast radius.
   `verify` treats "egress open while containment is configured on" as a
   **[FAIL]**, not a note — a rule that silently did not load is the exact
   failure this command exists to catch.
+- **The allowlist is scoped to destination *and port*.** An entry is
+  `hostname[:port[,port…]]`, defaulting to 443 and 80 — allowlisting a name does
+  not open every port on the addresses it resolves to. This closes the non-web
+  surface (SSH, databases, mail, admin panels) that an address-only rule
+  silently permitted; it does **not** help with CDN fronting, where the
+  neighbours share :443 anyway.
 - **The egress allowlist is IP-based, and two residual channels survive it.**
   (1) *DNS:* the guest resolves through the host, so an agent can encode data into
   subdomain lookups (`<data>.attacker.example`) — low bandwidth, but enough for a

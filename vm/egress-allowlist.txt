@@ -3,6 +3,13 @@
 # add the EXTERNAL sites you trust here, one host per line. The host bridge (for
 # LLM/API calls) and DNS are ALWAYS allowed. Open the VM fully: ./kagebox egress off
 #
+# SYNTAX:  hostname[:port[,port...]]
+#   example.com            -> ports 443 and 80 (the default)
+#   example.com:443        -> HTTPS only
+#   example.com:443,8443   -> both
+# An entry names a SERVICE, not an address: a bare hostname does NOT open every
+# port on the IPs it resolves to. Change the default with EGRESS_DEFAULT_PORTS.
+#
 # With this file empty, "egress on" is maximally strict: the agent can talk to
 # the bridge (so cloud/local models still work) but reach nothing else on the
 # internet — the tightest posture for running untrusted input. It blocks bulk
@@ -14,6 +21,8 @@
 # Entries are resolved to IPs and re-resolved every ~10 min on the host, so
 # rotating IPs keep working — but CDN-fronted hosts share IPs with unrelated
 # sites, so allowlisting one effectively allows others on the same front end.
+# Port-scoping does NOT fix that (the neighbours are on :443 too); what it
+# closes is the non-web surface — SSH, databases, admin panels — on those IPs.
 #
 # --- examples (uncomment what you trust) ---
 # api.telegram.org
