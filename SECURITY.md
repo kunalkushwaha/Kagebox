@@ -181,6 +181,16 @@ bound the blast radius.
   Claude), your task text is sent to that provider. Use the local backend for
   private data.
 
+## Invariants, and testing them adversarially
+
+The properties this document claims are listed as testable invariants in
+**[INVARIANTS.md](INVARIANTS.md)**, along with the tests that attack each one
+and an explicit list of what is *not* covered. Every control here fails open, so
+the boundary gets tests written as attacks rather than as feature checks:
+`tests/test_invariants.py` (offline, runs in CI) and `tests/adversarial.sh`
+(live — tries to read the host ruleset, flush its way out, reach non-allowlisted
+destinations over v4 and v6, find a credential, and open its own door).
+
 ## Hardening checklist
 
 - [ ] `./kagebox egress on` for any untrusted / web-facing task.

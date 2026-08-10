@@ -167,6 +167,13 @@ whole VM, not just the agent; `workspace/` is a two-way door). Confirm the bound
 inside the VM with `./kagebox verify` — every control here fails *open*, so one that
 silently didn't load looks exactly like one that's working.
 
+Because of that, the properties Kagebox claims are written down as testable invariants
+in **[INVARIANTS.md](INVARIANTS.md)**, with the attacks that check each one and an honest
+list of what isn't covered. `bash tests/adversarial.sh` runs them against a live sandbox —
+it tries to read the host ruleset, flush its way out, reach non-allowlisted destinations
+over v4 and v6, find a credential, and open its own door. The offline half runs in CI on
+every push.
+
 ## Contributing
 
 See **[CONTRIBUTING.md](CONTRIBUTING.md)**. No build step — it's shell + stdlib Python.
