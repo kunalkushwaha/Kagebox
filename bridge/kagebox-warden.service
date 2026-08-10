@@ -1,0 +1,24 @@
+[Unit]
+Description=Kagebox egress warden (human-approved, time-boxed internet windows)
+Documentation=file:__KAGEBOX_DIR__/SECURITY.md
+After=network-online.target
+
+[Service]
+Type=simple
+# Runs as root because it drives host nftables — the one thing the sandbox
+# must never be able to do for itself. The approval bot token lives in this
+# root-only file and is NEVER copied into the VM.
+EnvironmentFile=-/etc/kagebox/warden.env
+Environment=WARDEN_CONF=/etc/kagebox/warden.env
+ExecStart=/usr/bin/python3 __KAGEBOX_DIR__/bridge/egress-warden.py
+# If the warden goes away mid-window the door would otherwise stay open. This
+# re-seals, but ONLY when a window was actually open (marker present), so
+# stopping the service never overrides a deliberate `./kagebox egress off`.
+ExecStopPost=/usr/bin/python3 __KAGEBOX_DIR__/bridge/egress-warden.py seal-if-open
+Restart=on-failure
+RestartSec=3
+RuntimeDirectory=kagebox
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target

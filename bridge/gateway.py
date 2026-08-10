@@ -34,6 +34,7 @@ import json
 import time
 import shutil
 import posixpath
+import socket
 import subprocess
 import threading
 import urllib.request
@@ -367,6 +368,18 @@ def flatten_messages(messages):
     return prompt
 
 
+# --- egress-window request route ---------------------------------------------
+# The guest's ONLY way to ask for internet access. This route deliberately does
+# NOT decide anything: it forwards the ask to the root warden over a unix socket
+# and relays the verdict. The gateway runs as the desktop user and cannot open
+# nftables either — so a compromised gateway is still not a way through the wall.
+# If the warden is not installed or not running, the answer is no.
+EGRESS_REQUEST_PATH = "/egress/request"
+WARDEN_SOCK = os.environ.get("WARDEN_SOCK", "/run/kagebox/warden.sock")
+# Approval needs a human tap and the window itself runs to completion before the
+# warden replies, so the guest's HTTP call is a long one by nature.
+WARDEN_TIMEOUT = int(os.environ.get("WARDEN_TIMEOUT", "480"))
+
 _claude_calls = []          # unix timestamps of recent /claude invocations
 _claude_lock = threading.Lock()
 
@@ -420,6 +433,8 @@ class Handler(BaseHTTPRequestHandler):
     def _dispatch(self):
         if self.path.startswith(CLAUDE_PREFIX):
             return self._claude()
+        if self.path.rstrip("/") == EGRESS_REQUEST_PATH:
+            return self._egress_request()
         return self._proxy()
 
     do_GET = do_POST = do_PUT = do_DELETE = do_PATCH = do_HEAD = _dispatch
@@ -596,6 +611,52 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(b"%X\r\n" % len(done) + done + b"\r\n")
         self.wfile.write(b"0\r\n\r\n")
         self.wfile.flush()
+
+    # -- egress window request ------------------------------------------------
+    def _egress_request(self):
+        """Relay a guest 'may I have the internet?' ask to the root warden.
+
+        No decision is made here. We pass the guest's stated reason through to
+        the human (clearly labelled as untrusted, warden-side) and return the
+        verdict. Every error path is a denial — an unreachable warden means the
+        door stays shut, never that it opens by default.
+        """
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        raw = self.rfile.read(length) if length else b""
+        if self.command != "POST":
+            return self._fail(405, "gateway: POST a JSON body to /egress/request")
+        try:
+            req = json.loads(raw.decode() or "{}")
+        except Exception:
+            return self._fail(400, "gateway: invalid JSON for /egress/request")
+        payload = json.dumps({"reason": str(req.get("reason", ""))[:300],
+                              "seconds": req.get("seconds", 60)}) + "\n"
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(WARDEN_TIMEOUT)
+            s.connect(WARDEN_SOCK)
+        except FileNotFoundError:
+            return self._fail(503, "gateway: egress warden is not installed "
+                                   "(host: ./kagebox warden setup) — denied")
+        except Exception as e:
+            return self._fail(503, f"gateway: cannot reach the egress warden ({e}) — denied")
+        try:
+            s.sendall(payload.encode())
+            buf = b""
+            while b"\n" not in buf and len(buf) < 8192:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+            resp = json.loads(buf.decode(errors="replace").strip() or "{}")
+        except socket.timeout:
+            return self._fail(504, "gateway: warden did not answer in time — denied")
+        except Exception as e:
+            return self._fail(502, f"gateway: warden error ({e}) — denied")
+        finally:
+            s.close()
+        self._log("warden", 200)
+        return self._send_json(resp)
 
     # -- helpers --------------------------------------------------------------
     def _send_json(self, obj, code=200):
