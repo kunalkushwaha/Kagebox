@@ -54,6 +54,13 @@ bound the blast radius.
   table cannot be loaded (sudo declined, for instance) the clone is destroyed
   and the task is not run. Set `KAGEBOX_TASK_UNCONTAINED=1` to override — only
   when you trust the prompt and everything it will read.
+- **`./kagebox skills` opens egress for the fetch, then re-seals.** Skills install
+  from open-ended, CDN-fronted registries (skills.sh, GitHub, ClawHub, PyPI/npm
+  for their deps) that an IP allowlist cannot reliably pin, so the command opens
+  egress for the duration of the fetch and re-seals afterward (even on Ctrl-C).
+  It is a deliberate, user-initiated window — and installing a skill runs that
+  skill's code inside the VM, so only install skills you trust. Read-only
+  operations (`list`, `config`, `uninstall`) never open the door.
 - **The shared `workspace/` folder is a two-way door.** Anything you put there is
   readable by the agent; anything it writes there lands on your host. Don't put
   secrets in `workspace/`.
