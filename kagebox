@@ -18,6 +18,9 @@
 #   ./kagebox gateway ... manage the messaging gateway (status|start|stop|restart|run)
 #   ./kagebox skills ...  install/search/manage Hermes skills
 #                         (opens egress just for the fetch, then re-seals)
+#   ./kagebox research "<q>"  web-enabled research/search in a bounded window:
+#                         opens the VM's internet (adult/malware DNS-filtered),
+#                         runs the task, then re-seals. Not containment — see -h.
 #   ./kagebox backup      snapshot Hermes memory/state to the host (survives VM loss)
 #   ./kagebox restore     restore Hermes memory/state from the host backup
 #   ./kagebox egress ...  host-enforced egress allowlist for the VM (on|off|status|refresh)
@@ -501,6 +504,54 @@ cmd_skills() {
   return "$rc"
 }
 
+# Run a web-enabled research/search task in a bounded window. Internet search
+# that reads arbitrary pages genuinely needs broad egress (fetching any page IS
+# egress), so rather than punch a permanent hole this OPENS the VM's internet
+# for one run and RE-SEALS after — re-sealed even on Ctrl-C. A best-effort
+# content filter (a family DNS resolver that blocks adult/malware) applies
+# during the window. That filter is HYGIENE, not containment: a denylist fails
+# open and cannot stop a determined exfil — which is why the door still closes
+# again afterward. Untrusted input? Prefer `./kagebox task` (throwaway clone).
+cmd_research() {
+  vm_exists || die "run ./kagebox setup first (need the sandbox VM)"
+  multipass info "$VM_NAME" 2>/dev/null | grep -q Running \
+    || { msg "starting $VM_NAME..."; multipass start "$VM_NAME"; ensure_mount; bridge_start >/dev/null 2>&1; }
+  local prompt="$*"
+  [ -n "$prompt" ] || die "usage: ./kagebox research \"<what to search / research>\""
+  # Cloudflare for Families (adult + malware) by default. Override with
+  # KAGEBOX_FILTER_DNS="9.9.9.9 …", or KAGEBOX_FILTER_DNS="" to disable it.
+  local filter_dns="${KAGEBOX_FILTER_DNS-1.1.1.3 1.0.0.3}"
+  local was_contained=0; [ -f /etc/cron.d/kagebox-egress ] && was_contained=1
+  local opened=0 filtered=0
+  restore() {
+    if [ "$filtered" = 1 ]; then filtered=0
+      multipass exec "$VM_NAME" -- bash -lc 'ifc=$(ip route|awk "/^default/{print \$5;exit}"); sudo resolvectl revert "$ifc"' >/dev/null 2>&1 || true
+    fi
+    if [ "$opened" = 1 ]; then opened=0; msg "re-sealing egress (back to contained)..."
+      cmd_egress on >/dev/null || warn "FAILED to re-seal egress — run './kagebox egress on' NOW to re-contain."
+    fi
+  }
+  trap 'restore' EXIT INT TERM
+  # 1. open the door for the run
+  if [ "$was_contained" = 1 ]; then
+    warn "opening the VM's internet for this run — the WHOLE VM (agent + any gateway) can reach the web until it finishes, then it re-seals. A bounded window, not containment."
+    cmd_egress off >/dev/null || die "could not open egress (sudo declined?) — nothing changed."
+    opened=1
+  fi
+  # 2. best-effort content filter (hygiene, NOT security — DNS-based, bypassable)
+  if [ -n "$filter_dns" ]; then
+    if multipass exec "$VM_NAME" -- bash -lc "ifc=\$(ip route|awk '/^default/{print \$5;exit}'); sudo resolvectl dns \"\$ifc\" $filter_dns" >/dev/null 2>&1; then
+      filtered=1; msg "content filter ON — DNS -> $filter_dns (blocks adult/malware; best-effort hygiene)"
+    else warn "could not apply the content-filter DNS — continuing without it"; fi
+  fi
+  # 3. run the agent task with web access; output lands in the shared workspace
+  msg "researching (web open$([ "$filtered" = 1 ] && echo ", filtered")): $prompt"
+  multipass exec "$VM_NAME" -- bash -lc 'cd ~/workspace 2>/dev/null; export XDG_RUNTIME_DIR=/run/user/$(id -u); hermes -z "$1" --yolo' kagebox-research "$prompt" 2>&1 | tail -40
+  # 4. restore posture (revert DNS, re-seal)
+  restore
+  trap - EXIT INT TERM
+}
+
 cmd_telegram() {
   vm_exists || die "VM not up; run ./kagebox up"
   cat <<'INTRO'
@@ -693,6 +744,7 @@ case "${1:-}" in
   telegram) cmd_telegram ;;
   gateway) shift; cmd_gateway "$@" ;;
   skills) shift; cmd_skills "$@" ;;
+  research) shift; cmd_research "$@" ;;
   backup) cmd_backup ;;
   restore) cmd_restore ;;
   egress) shift; cmd_egress "$@" ;;
