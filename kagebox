@@ -764,6 +764,9 @@ cmd_autostart() {
       # rather than letting both the output and the fallback print.
       local w; w="$(systemctl is-enabled kagebox-warden.service 2>/dev/null || true)"
       echo "warden:          ${w:-unknown}$([ "$w" = not-found ] && echo '  (run: ./kagebox warden setup)')"
+      # Containment must survive a reboot, not just a logout (#12).
+      local e; e="$(systemctl is-enabled kagebox-egress.service 2>/dev/null || true)"
+      echo "egress at boot:  ${e:-unknown}$([ "$e" = not-found ] && echo '  (run: ./kagebox egress on)')"
       echo "multipassd:      $(systemctl is-enabled snap.multipass.multipassd.service 2>/dev/null || echo '?') / $(systemctl is-active snap.multipass.multipassd.service 2>/dev/null || echo '?')" ;;
     *) echo "usage: kagebox autostart {on|off|status}" ;;
   esac

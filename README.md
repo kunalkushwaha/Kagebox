@@ -127,7 +127,13 @@ on-disk marker re-checked at startup, and systemd `ExecStopPost`.
 VM and bridge back after logout and reboot. Linger is the load-bearing part: without it
 the bridge is a `--user` service that gets killed at logout and doesn't return until you
 log in again — regardless of being "enabled". `./kagebox autostart status` reports the
-whole picture (linger, unit, bridge, warden, multipassd) in one place.
+whole picture (linger, unit, bridge, warden, boot-time egress, multipassd) in one place.
+
+Containment persists separately and more strictly: `./kagebox egress on` installs a root
+unit (`kagebox-egress.service`) ordered **before** `multipassd`, so after a reboot the
+allowlist is in force before the VM can pass a packet — not up to ten minutes later when
+a timer notices. At that point DNS is usually not up, so the allowlist may start empty
+(bridge-only, i.e. stricter) and fill in on the first refresh.
 
 ## Memory & files
 
