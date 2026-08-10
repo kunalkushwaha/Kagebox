@@ -142,6 +142,25 @@ table $TABLE {
 EOF
 }
 
+UNITFILE="/etc/systemd/system/kagebox-egress.service"
+
+install_unit() {   # boot-time restore, so containment precedes the VM (#12)
+  command -v systemctl >/dev/null 2>&1 || return 0
+  [ -f "$HERE/bridge/kagebox-egress.service" ] || return 0
+  local tmp; tmp="$(mktemp)"
+  sed "s|__KAGEBOX_DIR__|$HERE|g" "$HERE/bridge/kagebox-egress.service" > "$tmp"
+  if ! cmp -s "$tmp" "$UNITFILE" 2>/dev/null; then
+    mv "$tmp" "$UNITFILE" && chmod 0644 "$UNITFILE"
+    systemctl daemon-reload 2>/dev/null || true
+  else rm -f "$tmp"; fi
+  systemctl enable kagebox-egress.service >/dev/null 2>&1 \
+    || echo "host-egress: WARNING: could not enable kagebox-egress.service — containment will NOT be restored at boot" >&2
+}
+remove_unit() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  systemctl disable kagebox-egress.service >/dev/null 2>&1 || true
+}
+
 install_cron() {   # host-side refresh so CDN/rotating allowlist IPs don't go stale
   [ -d /etc/cron.d ] || return 0
   cat > "$CRONFILE" <<EOF
@@ -160,8 +179,28 @@ case "$ACTION" in
     build_table || die "nft failed to load the egress ruleset — the previous state is unchanged (NOT enforcing). Nothing claimed."
     load_set
     flush_conntrack
+    install_unit
     install_cron
     echo "host egress ON — iface '$IFACE' may reach: bridge (tcp/$PORT) + DNS/DHCP on the host, and $(set_count) allowlisted IP(s) from $(basename "$ALLOWFILE"). All other egress DROPPED (host-enforced; the guest cannot remove it)."
+    ;;
+  boot)
+    # Boot-time restore (#12). Runs from kagebox-egress.service, ordered BEFORE
+    # multipassd, so containment is in force before the VM can pass a packet.
+    #
+    # Deliberately does NOT require the bridge interface to exist yet — that is
+    # what makes the ordering safe. Every rule matches on `iifname "$IFACE"`, a
+    # per-packet NAME comparison (not `iif`, which resolves an interface index
+    # at load time), so the table loads fine now and starts biting the moment
+    # multipass creates the bridge. Waiting for the interface would mean racing
+    # the very thing we are trying to get ahead of.
+    #
+    # DNS is usually not up this early, so `load_set` may resolve nothing and
+    # the allowlist may start EMPTY — i.e. bridge-only, which is stricter, not
+    # weaker. The refresh timer fills it in once resolution works. Failing
+    # towards "too closed" at boot is the correct direction.
+    build_table || die "nft failed to load the egress ruleset at boot — NOT enforcing"
+    load_set || true
+    echo "host egress: restored at boot (iface '$IFACE', $(set_count) allowlisted IP(s); the set fills in once DNS is up)"
     ;;
   refresh)
     # Runs on a timer while egress is intended ON. Two jobs:
@@ -179,6 +218,7 @@ case "$ACTION" in
     ;;
   off)
     nft list table $TABLE >/dev/null 2>&1 && nft delete table $TABLE
+    remove_unit
     remove_cron
     echo "host egress OFF — VM has open internet again."
     ;;
@@ -191,5 +231,5 @@ case "$ACTION" in
       echo "host egress: OFF (VM has open internet)"
     fi
     ;;
-  *) echo "usage: host-egress.sh {on|off|refresh|status}" >&2; exit 1 ;;
+  *) echo "usage: host-egress.sh {on|off|boot|refresh|status}" >&2; exit 1 ;;
 esac

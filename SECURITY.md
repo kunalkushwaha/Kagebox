@@ -38,9 +38,16 @@ bound the blast radius.
   even with root in the VM — cannot remove it, and IPv6 egress is dropped so it
   can't slip around the (IPv4) allowlist. Run `./kagebox egress off` to open the
   VM's internet, and `./kagebox verify` to confirm the posture from inside the
-  VM. **After a host reboot** the runtime table is gone until the 10-minute
-  refresh cron re-asserts it (or you run `./kagebox egress on`); `./kagebox
-  doctor` shows the current posture.
+  VM. **Across a host reboot**, containment is restored by a root systemd unit
+  (`kagebox-egress.service`, installed by `egress on`) that is ordered *before*
+  `multipassd` — so the allowlist is in force before the VM can pass a packet,
+  rather than arriving up to 10 minutes later on the refresh timer. The unit can
+  load the table before the bridge interface exists because every rule matches
+  on `iifname` (a per-packet name comparison) rather than `iif` (which resolves
+  an interface index at load time). At that point DNS is usually not up, so the
+  allowlist may start **empty** — bridge-only, i.e. stricter — and the refresh
+  timer fills it in. The timer remains as a backstop; it is no longer the
+  mechanism that restores containment. `./kagebox doctor` shows the posture.
   **`./kagebox setup` fails closed about this.** It reports the posture it
   actually observed — never the one it intended — and exits **non-zero** with a
   loud `SECURITY CONTAINMENT IS NOT ENABLED` banner if containment could not be
