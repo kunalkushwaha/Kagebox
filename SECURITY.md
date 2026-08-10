@@ -41,6 +41,15 @@ bound the blast radius.
   VM. **After a host reboot** the runtime table is gone until the 10-minute
   refresh cron re-asserts it (or you run `./kagebox egress on`); `./kagebox
   doctor` shows the current posture.
+  **`./kagebox setup` fails closed about this.** It reports the posture it
+  actually observed — never the one it intended — and exits **non-zero** with a
+  loud `SECURITY CONTAINMENT IS NOT ENABLED` banner if containment could not be
+  applied (sudo declined, nftables missing) or if `verify` found a broken
+  invariant. It will not print "Sandbox ready" in either case.
+  `KAGEBOX_ALLOW_UNCONTAINED=1` proceeds anyway, and still warns. Likewise
+  `verify` treats "egress open while containment is configured on" as a
+  **[FAIL]**, not a note — a rule that silently did not load is the exact
+  failure this command exists to catch.
 - **The egress allowlist is IP-based, and two residual channels survive it.**
   (1) *DNS:* the guest resolves through the host, so an agent can encode data into
   subdomain lookups (`<data>.attacker.example`) — low bandwidth, but enough for a

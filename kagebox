@@ -217,13 +217,32 @@ vm_claude_setup() {
 }
 
 # ---------------------------------------------------------------- verify ---
+# Is host-enforced containment INTENDED? `egress on` installs this marker and
+# `egress off` removes it, so its presence means "the operator asked to be
+# contained". That is deliberately distinct from "containment is actually in
+# force", which only a probe from inside the guest can establish — the whole
+# point of verify. When intent and reality disagree, that is a FAILURE, not a
+# note: an allowlist that silently did not load looks exactly like one that did.
+#
+# CAVEAT: host-egress.sh only writes this marker when /etc/cron.d exists, so on
+# a cron-less host containment can be ON with no marker. That would make us
+# UNDER-report (a real fail-open scored as a note), so callers who already know
+# the intent pass it explicitly — see verify()'s argument, used by cmd_setup.
+egress_intended() { [ -f /etc/cron.d/kagebox-egress ]; }
+
+# verify [expect_contained]
+#   expect_contained: 1/0 to state the intended posture outright. Omit to infer
+#   it from the host marker. Passing it is strictly better where it is known.
 verify() {
   vm_exists || die "no VM (run ./kagebox setup)"
   multipass info "$VM_NAME" 2>/dev/null | grep -q Running || { msg "starting $VM_NAME..."; multipass start "$VM_NAME"; ensure_mount; bridge_start >/dev/null 2>&1; }
+  local expect_contained="${1:-}"
+  if [ -z "$expect_contained" ]; then expect_contained=0; egress_intended && expect_contained=1; fi
   msg "Verifying the sandbox boundary from INSIDE the VM (every control here fails open, so we assert, not assume)..."
   # Runs entirely in the guest. Core invariants FAIL the run if broken; egress
   # posture is probed and reported (open is a valid config until you contain it).
-  multipass exec "$VM_NAME" -- env KBOX_PORT="$BRIDGE_PORT" bash -s <<'GUEST'
+  multipass exec "$VM_NAME" -- env KBOX_PORT="$BRIDGE_PORT" \
+    KBOX_EXPECT_CONTAINED="$expect_contained" bash -s <<'GUEST'
 set -u
 export PATH="$HOME/.local/bin:$PATH"   # non-login shell: include where hermes installs
 PORT="${KBOX_PORT:-18080}"
@@ -282,7 +301,14 @@ else
   out=$(curl -s -o /dev/null -w '%{http_code}' --max-time 6 https://1.1.1.1 2>/dev/null); rc=$?
   if [ "$rc" = 0 ] && [ "$out" != 000 ]; then
     contained=no
-    note "egress OPEN — direct internet reachable (1.1.1.1 = $out); run './kagebox egress on' for untrusted work"
+    # Open because you chose open is a note. Open while the host is CONFIGURED
+    # to contain means the rule did not take — that is the fail-open case this
+    # whole command exists to catch, so it must FAIL the run, not inform.
+    if [ "${KBOX_EXPECT_CONTAINED:-0}" = 1 ]; then
+      bad "egress OPEN but containment is CONFIGURED ON — the host rule is NOT in force (fail-open); run './kagebox egress on' and re-verify"
+    else
+      note "egress OPEN — direct internet reachable (1.1.1.1 = $out); run './kagebox egress on' for untrusted work"
+    fi
   elif [ "$rc" = 7 ] || [ "$rc" = 28 ]; then
     contained=yes
     pass "egress CONTAINED — direct internet (1.1.1.1) blocked (curl rc=$rc)"
@@ -350,9 +376,20 @@ cmd_setup() {
   # = bridge-only, the tightest posture; add domains you trust to
   # vm/egress-allowlist.txt. Non-fatal — the sandbox is usable either way.
   msg "enabling host-enforced egress — contained by default (needs sudo)..."
-  cmd_egress on || warn "egress not enabled (sudo declined?) — run ./kagebox egress on when ready"
-  verify
-  cat <<EOF
+  local contained=1 vrc=0
+  cmd_egress on || contained=0
+  # verify returns non-zero when a boundary invariant is broken. Capture it
+  # rather than letting `set -e` abort here: a silent exit tells the user
+  # nothing, and this is exactly the moment they need to be told. We pass the
+  # intent we actually observed instead of letting verify re-infer it, so a
+  # host with no /etc/cron.d cannot downgrade a fail-open to a note.
+  verify "$contained" || vrc=$?
+
+  # The banner reports the posture we OBSERVED, never the one we intended. The
+  # old version printed "egress: contained" unconditionally, so a declined sudo
+  # prompt still ended with the words "Sandbox ready. (egress: contained)".
+  if [ "$contained" = 1 ] && [ "$vrc" = 0 ]; then
+    cat <<EOF
 
 $(printf '\033[1;32m✓ Sandbox ready.\033[0m')  (egress: contained — allowlist in vm/egress-allowlist.txt)
   Enter it:     ./kagebox shell     (then type: hermes)
@@ -360,6 +397,23 @@ $(printf '\033[1;32m✓ Sandbox ready.\033[0m')  (egress: contained — allowlis
   Status:       ./kagebox status
   Tear it down: ./kagebox destroy
 EOF
+    return 0
+  fi
+
+  if [ "$contained" = 0 ]; then
+    printf '\n\033[1;31m╷ Kagebox sandbox created, but SECURITY CONTAINMENT IS NOT ENABLED.\033[0m\n'
+    echo   "╵ The VM currently has UNRESTRICTED network egress."
+    echo   "  Containment could not be applied (sudo declined, or nftables failed)."
+    echo   "  Fix it with:  ./kagebox egress on   then:  ./kagebox verify"
+  else
+    printf '\n\033[1;31m╷ Kagebox sandbox created, but THE BOUNDARY DID NOT VERIFY.\033[0m\n'
+    echo   "╵ One or more invariants above reported [FAIL] — do not treat this"
+    echo   "  sandbox as contained until they pass. Re-check with: ./kagebox verify"
+  fi
+  echo   "  Treat the sandbox as UNCONTAINED: do not point it at untrusted input."
+  # Exit non-zero so scripts and CI cannot mistake this for a good setup.
+  [ "${KAGEBOX_ALLOW_UNCONTAINED:-0}" = 1 ] || return 1
+  warn "KAGEBOX_ALLOW_UNCONTAINED=1 — continuing anyway, uncontained."
 }
 cmd_up() { ensure_multipass; vm_exists && multipass start "$VM_NAME" || warn "VM missing; run setup"; ensure_mount; bridge_start; }
 cmd_down() { vm_exists && cmd_backup 2>/dev/null || true; multipass stop "$VM_NAME" 2>/dev/null || true; bridge_stop; }

@@ -12,10 +12,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Shell syntax (bash -n)
-        run: bash -n kagebox vm/*.sh host-gpu/*.sh
+        run: bash -n kagebox vm/*.sh host-gpu/*.sh bridge/*.sh tests/*.sh
 
       - name: Python syntax
-        run: python3 -m py_compile bridge/gateway.py evals/model_eval.py
+        run: python3 -m py_compile bridge/gateway.py bridge/egress-warden.py evals/model_eval.py
 
       - name: Validate providers.json
         run: python3 -c "import json; json.load(open('bridge/providers.json'))"
@@ -37,6 +37,9 @@ jobs:
 
       - name: Bridge containment tests
         run: python3 tests/test_gateway.py
+
+      - name: Setup posture reporting (never claim containment we did not observe)
+        run: bash tests/test_setup_posture.sh
 
       - name: Validate egress rulesets (nft syntax)
         run: |
