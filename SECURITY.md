@@ -163,6 +163,18 @@ bound the blast radius.
   account), and the VM is isolated, but a VM compromise exposes that token.
 - **Shared host GPU.** When the local model runs on the host iGPU, the VM sends
   inference requests to it; this is a compute channel, not a filesystem/host one.
+- **What the sandbox contains is recorded, and optionally pinned.**
+  Provisioning downloads the Hermes installer, prints its sha256 and runs it
+  from a file rather than piping it into a shell; set `HERMES_INSTALLER_SHA256`
+  in `kagebox.env` to pin it, and a mismatch aborts instead of installing
+  something other than what you reviewed. Each provision records
+  `hermes-state/provenance.txt` — agent version, installer hash, OS, kernel,
+  Python, the requested image alias *and the actual image build*, multipass
+  version, and the Kagebox commit — shown by `./kagebox status`. Note the
+  installer runs **inside the contained VM**, and a hostile agent is what the
+  whole design already assumes, so the security gain here is modest; the real
+  value is being able to answer "which build was that?" for reproducibility,
+  rollback and incident response.
 - **Hypervisor / kernel 0-days.** VM isolation is strong but not absolute — a
   QEMU/KVM breakout would defeat it. Keep your host patched.
 - **The model provider sees your prompts.** When using a cloud backend (Gemini,
