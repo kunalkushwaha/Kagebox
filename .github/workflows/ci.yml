@@ -41,6 +41,9 @@ jobs:
       - name: Setup posture reporting (never claim containment we did not observe)
         run: bash tests/test_setup_posture.sh
 
+      - name: Egress allowlist parsing (an entry names a service, not an address)
+        run: bash tests/test_egress_allowlist.sh
+
       - name: Validate egress rulesets (nft syntax)
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq nftables

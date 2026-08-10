@@ -62,27 +62,49 @@ resolve_one() {
   printf '%s\n' "$ips" | grep -E '^([0-9]{1,3}\.){3}[0-9]{1,3}$' | sort -u
 }
 
-resolve_ips() {
+# Allowlist entries are `hostname[:port[,port...]]`. A bare hostname means the
+# default ports below — allowlisting a name should not hand the agent every
+# service that happens to share that address (#14). Note this does nothing about
+# CDN fronting: a shared front-end IP still serves many unrelated hostnames on
+# :443. What it closes is the NON-web surface on those addresses — SSH,
+# databases, mail, admin panels — which an IP-only rule silently permitted.
+DEFAULT_PORTS="${EGRESS_DEFAULT_PORTS:-443,80}"
+
+# Emit `IP . PORT` pairs, one per line, for the nft concat set.
+resolve_pairs() {
   [ -f "$ALLOWFILE" ] || return 0
-  local h got
-  grep -vE '^[[:space:]]*#|^[[:space:]]*$' "$ALLOWFILE" | awk '{print $1}' | while read -r h; do
+  local entry h ports got ip p
+  grep -vE '^[[:space:]]*#|^[[:space:]]*$' "$ALLOWFILE" | awk '{print $1}' | while read -r entry; do
+    case "$entry" in
+      *:*) h="${entry%%:*}"; ports="${entry#*:}" ;;
+      *)   h="$entry";       ports="$DEFAULT_PORTS" ;;
+    esac
     got=$(resolve_one "$h")
-    [ -z "$got" ] && echo "host-egress: WARNING: '$h' resolved to no IPv4 (v6-only or DNS failure) — NOT allowlisted" >&2
-    printf '%s\n' "$got"
-  done | grep -E '^([0-9]{1,3}\.){3}[0-9]{1,3}$' | sort -u
+    [ -z "$got" ] && { echo "host-egress: WARNING: '$h' resolved to no IPv4 (v6-only or DNS failure) — NOT allowlisted" >&2; continue; }
+    for ip in $got; do
+      case "$ip" in ''|*[!0-9.]*) continue ;; esac
+      # shellcheck disable=SC2086
+      for p in $(echo "$ports" | tr ',' ' '); do
+        case "$p" in ''|*[!0-9]*) echo "host-egress: WARNING: '$entry' has a non-numeric port '$p' — skipped" >&2; continue ;; esac
+        [ "$p" -ge 1 ] 2>/dev/null && [ "$p" -le 65535 ] 2>/dev/null || continue
+        printf '%s . %s\n' "$ip" "$p"
+      done
+    done
+  done | sort -u
 }
 
 load_set() {   # (re)populate allow4; surface errors instead of swallowing them
-  local ips; ips=$(resolve_ips)
+  local pairs; pairs=$(resolve_pairs)
   nft flush set $TABLE allow4 || die "could not flush allow4 set (is the table loaded?)"
-  if [ -n "$ips" ]; then
-    nft add element $TABLE allow4 "{ $(echo "$ips" | paste -sd, -) }" \
-      || echo "host-egress: WARNING: some allowlist IPs failed to load into the set" >&2
+  if [ -n "$pairs" ]; then
+    nft add element $TABLE allow4 "{ $(echo "$pairs" | paste -sd, -) }" \
+      || echo "host-egress: WARNING: some allowlist entries failed to load into the set" >&2
   fi
 }
 
-set_count() {  # IPs actually present in the set, not merely resolved
-  nft list set $TABLE allow4 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | sort -u | wc -l
+set_count() {  # (ip,port) pairs actually present in the set, not merely resolved
+  nft list set $TABLE allow4 2>/dev/null \
+    | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3} \. [0-9]+' | sort -u | wc -l
 }
 
 # --- best-effort: make ON authoritative over flows opened while OFF ---------
@@ -103,7 +125,7 @@ build_table() {
 add table $TABLE
 delete table $TABLE
 table $TABLE {
-  set allow4 { type ipv4_addr; flags interval; }
+  set allow4 { type ipv4_addr . inet_service; }
 
   # --- guest -> beyond-host (routed/NAT'd): the containment control ---------
   chain forward {
@@ -112,7 +134,11 @@ table $TABLE {
   }
   chain guest_egress {
     ct state established,related accept
-    ip daddr @allow4 accept
+    # Allowlisted DESTINATION AND PORT, not merely destination (#14). UDP is
+    # matched too so QUIC/HTTP-3 to an allowlisted :443 keeps working; anything
+    # on a port that was not asked for falls through to the drop below.
+    ip daddr . tcp dport @allow4 accept
+    ip daddr . udp dport @allow4 accept
     # Non-allowlisted egress is dropped. The set is IPv4-only, so IPv6 NEW
     # packets never match the accept above and fall through to drop here (#8) —
     # no v6 path around the v4 allowlist.
@@ -181,7 +207,7 @@ case "$ACTION" in
     flush_conntrack
     install_unit
     install_cron
-    echo "host egress ON — iface '$IFACE' may reach: bridge (tcp/$PORT) + DNS/DHCP on the host, and $(set_count) allowlisted IP(s) from $(basename "$ALLOWFILE"). All other egress DROPPED (host-enforced; the guest cannot remove it)."
+    echo "host egress ON — iface '$IFACE' may reach: bridge (tcp/$PORT) + DNS/DHCP on the host, and $(set_count) allowlisted destination:port pair(s) from $(basename "$ALLOWFILE"). All other egress DROPPED (host-enforced; the guest cannot remove it)."
     ;;
   boot)
     # Boot-time restore (#12). Runs from kagebox-egress.service, ordered BEFORE
@@ -200,7 +226,7 @@ case "$ACTION" in
     # towards "too closed" at boot is the correct direction.
     build_table || die "nft failed to load the egress ruleset at boot — NOT enforcing"
     load_set || true
-    echo "host egress: restored at boot (iface '$IFACE', $(set_count) allowlisted IP(s); the set fills in once DNS is up)"
+    echo "host egress: restored at boot (iface '$IFACE', $(set_count) allowlisted destination:port pair(s); the set fills in once DNS is up)"
     ;;
   refresh)
     # Runs on a timer while egress is intended ON. Two jobs:
@@ -224,9 +250,9 @@ case "$ACTION" in
     ;;
   status)
     if nft list table $TABLE >/dev/null 2>&1; then
-      echo "host egress: ON (enforced on the host, iface '$IFACE', $(set_count) allowlisted IP(s))"
+      echo "host egress: ON (enforced on the host, iface '$IFACE', $(set_count) allowlisted destination:port pair(s))"
       nft list set $TABLE allow4 2>/dev/null | grep -oE 'elements = \{[^}]*\}' \
-        || echo "  allowlisted external IPs: none (bridge + DNS only)"
+        || echo "  allowlisted external destinations: none (bridge + DNS only)"
     else
       echo "host egress: OFF (VM has open internet)"
     fi
