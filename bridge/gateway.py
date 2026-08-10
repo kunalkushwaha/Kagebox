@@ -127,6 +127,123 @@ def route_name(path):
     return "ollama"
 
 
+# --- spend budgets (#15) ------------------------------------------------------
+# The VM boundary bounds CPU, memory and disk by construction — a runaway agent
+# destroys its own sandbox, which is containment working. Money is the one
+# resource that escapes the box: the keys are host-held precisely so the guest
+# cannot HOLD them, but it can still SPEND them, and a loop or an injected
+# instruction will.
+#
+# So the bridge, which already accounts every call, also enforces a ceiling.
+# Requests are checked before the work; tokens and cost are settled after (they
+# are only knowable from the response), which means the last call may cross the
+# line — the cap bounds the bleeding, it does not predict it.
+#
+# Counters are seeded from the usage log at startup, so restarting the gateway
+# does not hand back a fresh day's budget.
+DEFAULT_BUDGET = {"requests_per_hour": 0, "requests_per_day": 0, "usd_per_day": 0.0}
+_budget_cfg = {}          # route -> limits
+_prices = {}              # route -> (usd per Mtok in, out)
+_spend = []               # [ts, route, requests, in_tok, out_tok, usd]
+_spend_lock = threading.Lock()
+
+
+def load_budgets():
+    """Read per-route budgets and prices from providers.json (0 = unlimited)."""
+    cfg, prices = {}, {"ollama": (0.0, 0.0)}
+    try:
+        with open(PROVIDERS_FILE) as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+    defaults = (data.get("defaults") or {}).get("budget") or {}
+    for name, p in (data.get("providers") or {}).items():
+        b = dict(DEFAULT_BUDGET)
+        b.update(defaults)
+        b.update(p.get("budget") or {})
+        cfg[name] = b
+        pr = p.get("price_per_mtok") or {}
+        prices[name] = (float(pr.get("in", 0) or 0), float(pr.get("out", 0) or 0))
+    # /claude is not a providers.json entry; it spends a subscription, not a key.
+    cb = dict(DEFAULT_BUDGET); cb.update(defaults)
+    cb.update({"requests_per_hour": CLAUDE_MAX_PER_HOUR})
+    cfg.setdefault("claude", cb)
+    prices.setdefault("claude", (0.0, 0.0))
+    cfg.setdefault("ollama", dict(DEFAULT_BUDGET))
+    return cfg, prices
+
+
+def seed_spend_from_log():
+    """Replay the last 24h of usage so a restart is not a budget reset."""
+    if not USAGE_LOG or not os.path.exists(USAGE_LOG):
+        return
+    cutoff = time.time() - 86400
+    try:
+        with open(USAGE_LOG) as f:
+            for line in f:
+                try:
+                    e = json.loads(line)
+                except Exception:
+                    continue
+                ts = e.get("ts", 0)
+                if ts < cutoff:
+                    continue
+                r = e.get("route", "?")
+                pt, ct = e.get("prompt_tokens", 0) or 0, e.get("completion_tokens", 0) or 0
+                pin, pout = _prices.get(r, (0.0, 0.0))
+                _spend.append([ts, r, 1, pt, ct, pt / 1e6 * pin + ct / 1e6 * pout])
+    except Exception:
+        pass
+
+
+def _totals(route, window):
+    now = time.time()
+    req = tin = tout = 0
+    usd = 0.0
+    for ts, r, n, i, o, c in _spend:
+        if r == route and now - ts < window:
+            req += n; tin += i; tout += o; usd += c
+    return req, tin, tout, usd
+
+
+def budget_check(route):
+    """(ok, message). False once this route has spent its allowance."""
+    lim = _budget_cfg.get(route) or DEFAULT_BUDGET
+    with _spend_lock:
+        now = time.time()
+        _spend[:] = [s for s in _spend if now - s[0] < 86400]
+        rh = lim.get("requests_per_hour", 0) or 0
+        rd = lim.get("requests_per_day", 0) or 0
+        ud = float(lim.get("usd_per_day", 0) or 0)
+        if rh:
+            n, _, _, _ = _totals(route, 3600)
+            if n >= rh:
+                return False, f"{route}: hourly request budget spent ({n}/{rh})"
+        if rd:
+            n, _, _, _ = _totals(route, 86400)
+            if n >= rd:
+                return False, f"{route}: daily request budget spent ({n}/{rd})"
+        if ud:
+            _, _, _, usd = _totals(route, 86400)
+            if usd >= ud:
+                return False, f"{route}: daily cost budget spent (~${usd:.2f}/${ud:.2f})"
+        # Reserve the request now so concurrent calls cannot all pass the check.
+        _spend.append([now, route, 1, 0, 0, 0.0])
+    return True, ""
+
+
+def budget_settle(route, pt, ct):
+    """Attach the actual tokens/cost to this route's most recent reservation."""
+    pin, pout = _prices.get(route, (0.0, 0.0))
+    cost = (pt or 0) / 1e6 * pin + (ct or 0) / 1e6 * pout
+    with _spend_lock:
+        for s in reversed(_spend):
+            if s[1] == route and s[3] == 0 and s[4] == 0:
+                s[3], s[4], s[5] = pt or 0, ct or 0, cost
+                return
+        _spend.append([time.time(), route, 0, pt or 0, ct or 0, cost])
+
+
 def extract_usage(tail, ctype):
     """Best-effort (model, prompt_tokens, completion_tokens) from a response tail."""
     s = tail.decode("utf-8", "ignore")
@@ -452,6 +569,17 @@ class Handler(BaseHTTPRequestHandler):
                 403, f"gateway: {self.path} is not exposed to the sandbox "
                      f"(only inference and read-only endpoints are)")
 
+        # Spend gate (#15). Only the calls that actually cost money: a model
+        # listing is free, and the local Ollama route spends electricity, not
+        # your card. Checked after the cheap gates so a 403 costs no budget.
+        if not is_default and self.path.rstrip("/").endswith(
+                ("/chat/completions", "/completions", "/messages", "/generateContent")):
+            ok, why = budget_check(route_name(self.path))
+            if not ok:
+                return self._fail(429, f"gateway: budget exhausted — {why}. The "
+                                       f"sandbox writes the prompts; the host pays "
+                                       f"for them. Tune it in providers.json.")
+
         fwd = {k: v for k, v in self.headers.items() if k.lower() not in HOP}
         for k in [k for k in fwd if k.lower() in CLIENT_AUTH_HDRS]:
             del fwd[k]
@@ -526,6 +654,7 @@ class Handler(BaseHTTPRequestHandler):
             model, pt, ct = extract_usage(tail, ctype)
             if pt or ct:
                 usage_log(route_name(self.path), model, pt, ct)
+                budget_settle(route_name(self.path), pt, ct)
 
     # -- local claude -p endpoint --------------------------------------------
     def _claude(self):
@@ -550,10 +679,11 @@ class Handler(BaseHTTPRequestHandler):
 
         # Counted after the cheap gates above so a listing or a disabled-route
         # 503 does not consume budget, but before the work that costs quota.
-        if not claude_rate_ok():
-            return self._fail(429, f"gateway: /claude rate limit reached "
-                                   f"({CLAUDE_MAX_PER_HOUR}/hour) — the sandbox "
-                                   f"has spent this hour's host-quota budget")
+        ok, why = budget_check("claude")
+        if not ok:
+            return self._fail(429, f"gateway: budget exhausted — {why}. The "
+                                   f"sandbox writes the prompts; the host pays "
+                                   f"for them. Tune it in providers.json.")
 
         try:
             req = json.loads(raw or b"{}")
@@ -581,6 +711,7 @@ class Handler(BaseHTTPRequestHandler):
         self._log(f"claude -p (model={model}, {len(prompt)} chars in)", 200)
         _u = (_meta or {}).get("usage") or {}
         usage_log("claude", used, _u.get("input_tokens"), _u.get("output_tokens"))
+        budget_settle("claude", _u.get("input_tokens"), _u.get("output_tokens"))
         if stream:
             return self._claude_sse(cid, created, used, text)
         return self._send_json({
@@ -692,6 +823,15 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    global _budget_cfg, _prices
+    _budget_cfg, _prices = load_budgets()
+    seed_spend_from_log()
+    caps = ", ".join(
+        f"{r}:{v.get('requests_per_hour') or '-'}/h,{v.get('requests_per_day') or '-'}/d,"
+        f"${v.get('usd_per_day') or 0:g}/d"
+        for r, v in sorted(_budget_cfg.items())
+        if any((v.get('requests_per_hour'), v.get('requests_per_day'), v.get('usd_per_day'))))
+    sys.stdout.write(f"[bridge] spend budgets: {caps or 'none configured (unlimited)'}\n")
     ip = bind_ip()
     if not ip:
         sys.stderr.write(
