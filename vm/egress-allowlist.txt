@@ -37,6 +37,29 @@
 # pypi.org
 # registry.npmjs.org
 #
+# --- Research / marketing: predictable endpoints -----------------------------
+# For research and marketing work the agent needs the open web, and an IP
+# allowlist fundamentally cannot express "the open web" — following a search
+# result to an arbitrary domain is exactly what it cannot cover. Use
+# `./kagebox research "..."` (keyboard) or the warden's approved windows
+# (phone) for that.
+#
+# What an allowlist DOES cover well is the small set of endpoints research
+# hits over and over. Uncomment what you actually use — each one is a standing
+# hole, so keep the list short and prefer :443.
+# duckduckgo.com:443
+# html.duckduckgo.com:443           # the no-JS endpoint scrapers actually hit
+# lite.duckduckgo.com:443
+# en.wikipedia.org:443
+# arxiv.org:443
+# export.arxiv.org:443              # the arxiv skill's API endpoint
+# api.crossref.org:443              # DOI / citation metadata
+# api.semanticscholar.org:443
+# hn.algolia.com:443                # Hacker News search API
+# news.ycombinator.com:443
+# feeds.feedburner.com:443          # RSS, for the blogwatcher skill
+# huggingface.co:443
+#
 # Installing Hermes SKILLS pulls from open-ended, CDN-fronted registries
 # (skills.sh, GitHub, ClawHub, plus PyPI/npm for their deps). Pinning these by IP
 # is unreliable — the CDN hands out rotating addresses this list can't follow —

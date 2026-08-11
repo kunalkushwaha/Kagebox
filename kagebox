@@ -564,7 +564,10 @@ cmd_skills() {
   # the door (or ask for sudo) for those.
   local need_net=1
   case "$1" in
-    list|config|uninstall|reset|opt-in|opt-out|list-modified|diff|help|-h|--help) need_net=0 ;;
+    list|config|uninstall|reset|opt-in|opt-out|list-modified|diff) need_net=0 ;;
+    # `hermes skills` has no `help` subcommand — translate it rather than
+    # passing it through to an argparse error.
+    help|-h|--help) need_net=0; set -- --help ;;
   esac
   local was_contained=0; [ -f /etc/cron.d/kagebox-egress ] && was_contained=1
   local opened=0
