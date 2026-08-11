@@ -751,6 +751,15 @@ EOF
     sudo chmod 0755 /usr/local/bin/kagebox-web' >/dev/null 2>&1 \
     && msg "installed 'kagebox-web' inside the VM (the agent's way to ask)" \
     || warn "could not install the in-VM helper (is the VM running?)"
+  # A tool the agent does not know about is a tool it will not use. Ship the
+  # instructions with the binary: this skill tells it when to ask, to name the
+  # hosts, and that a denial is an answer rather than something to retry.
+  if [ -f "$HERE/skills/request-web/SKILL.md" ]; then
+    multipass exec "$VM_NAME" -- bash -lc 'mkdir -p ~/.hermes/skills/request-web && cat > ~/.hermes/skills/request-web/SKILL.md' \
+      < "$HERE/skills/request-web/SKILL.md" 2>/dev/null \
+      && msg "installed the 'request-web' skill (teaches the agent to ask)" \
+      || warn "could not install the request-web skill"
+  fi
 }
 
 warden_status() {
