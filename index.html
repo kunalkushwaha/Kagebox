@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kagebox — give the agent a desk, not your keys</title>
+<meta name="description" content="Run autonomous AI agents on your own hardware, contained: a KVM microVM, credentials that never leave the host, host-enforced egress, and an audit log.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>📦</text></svg>">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap wide">
+    <a class="brand" href="index.html">kagebox<span class="latch">┤──▪</span></a>
+    <nav class="top-nav">
+      <a href="index.html" aria-current="page">Overview</a>
+      <a href="security.html">Threat model</a>
+      <a href="invariants.html">Invariants</a>
+      <a href="https://github.com/kunalkushwaha/Kagebox">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap wide">
+  <div class="hero">
+<pre class="logo" aria-label="Kagebox">┌──────────────────────────────────────┐
+│  █  █  ██   ███ ████ ███   ██  █  █  │
+│  █ █  █  █ █    █    █  █ █  █ █  █  │
+│  ██   ████ █ ██ ███  ███  █  █  ██   ┤──▪
+│  █ █  █  █ █  █ █    █  █ █  █ █  █  │
+│  █  █ █  █  ███ ████ ███   ██  █  █  │
+└──────────────────────────────────────┘</pre>
+    <h1>Give the agent a desk, not your keys.</h1>
+    <p class="lede">An autonomous agent can open a shell, install packages, edit files and drive a
+    browser for an hour without asking. That is what makes it useful, and what makes running one
+    on your laptop a strange decision. Kagebox gives it a whole machine to work on — and possibly
+    wreck — that simply isn’t yours.</p>
+    <div class="cta">
+      <a class="btn primary" href="#quickstart">Quickstart</a>
+      <a class="btn" href="security.html">What it does and doesn’t protect</a>
+      <a class="btn" href="https://github.com/kunalkushwaha/Kagebox">Source</a>
+    </div>
+  </div>
+</div>
+
+<main class="wrap wide">
+
+<section id="why">
+  <h2><span class="num">01</span>The premise</h2>
+  <p class="sub">You would not give a new hire root on the machine holding your SSH keys.</p>
+  <p>Most of the safety conversation is about making the agent <em>trustworthy</em>. But you cannot
+  prompt your way to safety when the thing on the other end has a shell. If it can run
+  <code>curl</code>, it can exfiltrate. If it can run <code>rm</code>, it can delete. No amount of
+  “please be careful” changes the blast radius.</p>
+  <p>The more useful question is the one we already answered for humans and for services decades
+  ago: <strong>what can this thing reach if it turns on me?</strong> We don’t make employees
+  incapable of harm — we contain them. A workstation, not the CTO’s laptop. Scoped credentials, not
+  the master key. And an audit trail.</p>
+  <div class="note">
+    <span class="label">The design, in one sentence</span>
+    <p>Give the agent a full machine that isn’t yours; let it reach models and the web through a
+    single door you control; and keep every credential, and the final say, on your side of it.</p>
+  </div>
+</section>
+
+<section id="how">
+  <h2><span class="num">02</span>How the boundary is built</h2>
+  <p class="sub">Four controls, each placed where the agent can’t reach it.</p>
+
+<div class="diagram">
+<span class="host">HOST (you)</span>                          │  <b>SANDBOX (agent, root in here)</b>
+                                        │
+  API keys, Claude auth ──┐             │
+                          ▼             │
+  ollama ◀────────── <b>bridge gateway</b> ◀──┼──── model calls (no key ever crosses)
+                       │  allowlist     │
+                       │  audit log     │
+                       ▼                │
+  <span class="host">nftables egress</span> ◀──────────────────┼──── everything else
+  (keyed to the VM interface)           │      ▲
+                                        │      └─ guest root cannot alter this
+  workspace/ ◀───── shared folder ──────┼───▶ ~/workspace
+</div>
+
+  <h3>Its own kernel, not yours</h3>
+  <p>The agent runs in a KVM microVM, not a container. A container shares your kernel and a
+  container escape is a regularly-discovered class of bug; a microVM makes the boundary a
+  hypervisor. The agent gets a whole Linux box — it just can’t see your filesystem, processes, or
+  network.</p>
+
+  <h3>The keys never cross the desk</h3>
+  <p>Model calls route through a broker running as you, on the host, which injects the credential
+  into each request. From inside, the agent talks to a plain endpoint and never holds a secret —
+  and any credential header it sends is <em>dropped</em>, not relayed, so it can’t smuggle its own
+  key to an upstream either.</p>
+
+  <h3>A door that locks from the outside</h3>
+  <p>An earlier version enforced egress inside the VM, which is theatre: the agent has root there
+  and can flush its own firewall away. The rule now lives on the host, on the interface the VM sits
+  behind. The agent can be compromised to root and still can’t open it.</p>
+
+  <h3>The boundary has to prove itself</h3>
+  <p>Every control here fails <em>open</em> — a rule that silently didn’t load looks exactly like
+  one that’s working. So <code>./kagebox verify</code> climbs inside the running VM and tries to
+  break out, and an <a href="invariants.html">adversarial suite</a> attacks each stated invariant on
+  every push.</p>
+</section>
+
+<section id="quickstart">
+  <h2><span class="num">03</span>Quickstart</h2>
+  <p class="sub">Linux host with KVM, multipass, and Ollama for local models.</p>
+<pre><code><span class="c"># check the host, then build the sandbox (~10 min)</span>
+git clone https://github.com/kunalkushwaha/Kagebox.git &amp;&amp; cd Kagebox
+./kagebox doctor
+./kagebox setup
+
+<span class="c"># work in it</span>
+./kagebox shell            <span class="c"># then: hermes</span>
+./kagebox verify           <span class="c"># assert the boundary from inside</span></code></pre>
+
+  <p>Use a cloud brain for heavy reasoning — the key stays host-side:</p>
+<pre><code>cp bridge/secrets.env.example bridge/secrets.env
+echo 'GEMINI_API_KEY=...' &gt;&gt; bridge/secrets.env
+./kagebox bridge restart &amp;&amp; ./kagebox backend gemini</code></pre>
+</section>
+
+<section id="network">
+  <h2><span class="num">04</span>Network policy</h2>
+  <p class="sub">Egress runs under a named profile you choose.</p>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Profile</th><th>Reaches</th><th>For</th></tr></thead>
+    <tbody>
+      <tr><td><code>sealed</code></td><td>the model bridge, nothing else</td><td>untrusted input; <code>task</code> mode forces it</td></tr>
+      <tr><td><code>research</code> <strong>(default)</strong></td><td>search, Wikipedia, arxiv, Crossref, HN</td><td>reading and writing</td></tr>
+      <tr><td><code>dev</code></td><td>research + PyPI, npm, crates, Go, GitHub</td><td>coding agents</td></tr>
+      <tr><td><code>open</code></td><td>everything</td><td>you’ve decided</td></tr>
+    </tbody>
+  </table>
+  </div>
+<pre><code>./kagebox egress profile           <span class="c"># list them</span>
+./kagebox egress profile dev       <span class="c"># switch, and re-apply</span></code></pre>
+  <p>Your own <code>vm/egress-allowlist.txt</code> is layered on top of whichever profile is
+  active — a profile is a floor, never a ceiling.</p>
+
+  <div class="note caution">
+    <span class="label">Why the default isn’t the tightest one</span>
+    <p>A sealed default that blocks every real task teaches people to run <code>egress off</code>
+    once and never turn it back on — strictly worse than a curated allowlist. That is a usability
+    judgement with a security cost, and it is worth stating plainly: <strong>no profile except
+    <code>sealed</code> is exfiltration-proof.</strong> An allowlisted search endpoint is a data
+    channel — a query string can carry a key out, slowly — and CDN-fronted names drag their
+    neighbours along. Profiles bound the blast radius; they don’t make the agent safe to point at
+    hostile input.</p>
+  </div>
+
+  <h3>When an allowlist can’t express what you need</h3>
+  <p>Following a search result to an arbitrary domain is exactly what an IP allowlist cannot cover.
+  Two bounded escapes exist, and both close again:</p>
+  <ul>
+    <li><code>./kagebox research "…"</code> — opens egress for one run at the keyboard, re-seals
+    after, even on Ctrl-C.</li>
+    <li><strong>The warden</strong> — the sandbox <em>requests</em> named destinations, you approve
+    from your phone, and the grant carries a kernel-side timeout so it expires even if the warden
+    is killed. The guest can ask; only you can grant.</li>
+  </ul>
+</section>
+
+<section id="commands">
+  <h2><span class="num">05</span>Commands</h2>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>doctor</code></td><td>preflight-check the host</td></tr>
+      <tr><td><code>setup</code> / <code>destroy</code></td><td>build / tear down the sandbox</td></tr>
+      <tr><td><code>up</code> / <code>down</code> / <code>status</code></td><td>start, stop, inspect</td></tr>
+      <tr><td><code>shell</code></td><td>shell into the VM, then run <code>hermes</code></td></tr>
+      <tr><td><code>backend &lt;name&gt;</code></td><td>switch model: <code>ollama</code> · <code>claude</code> · <code>gemini</code></td></tr>
+      <tr><td><code>egress profile &lt;name&gt;</code></td><td>pick the network policy</td></tr>
+      <tr><td><code>verify</code></td><td>assert the boundary from inside the VM</td></tr>
+      <tr><td><code>warden setup</code></td><td>approve internet windows from your phone</td></tr>
+      <tr><td><code>research "…"</code></td><td>a web-enabled run in a bounded window</td></tr>
+      <tr><td><code>task "…"</code></td><td>one-off run in a throwaway, contained clone</td></tr>
+      <tr><td><code>audit</code> / <code>usage</code></td><td>what the agent called, and what it cost</td></tr>
+      <tr><td><code>backup</code> / <code>restore</code></td><td>snapshot the agent’s memory to the host</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="honest">
+  <h2><span class="num">06</span>What it does not protect</h2>
+  <p class="sub">Naming the gaps is part of the design, not an embarrassment to bury.</p>
+  <ul>
+    <li><strong>DNS still resolves.</strong> A determined process can whisper data out one lookup at
+    a time. Low bandwidth, but enough for a key.</li>
+    <li><strong>CDN fronting.</strong> An allowlisted name shares front-end addresses with unrelated
+    sites, so allowlisting one permits others. Port-scoping doesn’t help — the neighbours are on
+    :443 too.</li>
+    <li><strong>The shared folder is a two-way door, and you are the transport.</strong> Agent-authored
+    files can carry code that runs on the <em>host</em> the moment you act on them.</li>
+    <li><strong>Hypervisor 0-days.</strong> VM isolation is strong, not absolute.</li>
+  </ul>
+  <p>The full accounting is in the <a href="security.html">threat model</a>.</p>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap wide">
+    <p>Kagebox is a small, single-machine experiment, and it is rough in the places experiments are
+    rough. MIT licensed —
+    <a href="https://github.com/kunalkushwaha/Kagebox">github.com/kunalkushwaha/Kagebox</a></p>
+  </div>
+</footer>
+
+</body>
+</html>

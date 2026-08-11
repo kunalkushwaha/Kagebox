@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Threat model — Kagebox</title>
+<meta name="description" content="What the Kagebox sandbox protects against, and what it does not. Read it before trusting it with anything sensitive.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>📦</text></svg>">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap wide">
+    <a class="brand" href="index.html">kagebox<span class="latch">┤──▪</span></a>
+    <nav class="top-nav">
+      <a href="index.html">Overview</a>
+      <a href="security.html" aria-current="page">Threat model</a>
+      <a href="invariants.html">Invariants</a>
+      <a href="https://github.com/kunalkushwaha/Kagebox">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap wide">
+
+<section>
+  <h2>Threat model</h2>
+  <p class="sub">What is protected, what is not, and where the edges are.</p>
+  <p>This project runs an <strong>autonomous agent</strong> — software that executes arbitrary shell
+  commands, edits files, installs packages and drives a browser — inside a sandbox, so that a
+  misbehaving or prompt-injected agent cannot harm your host.</p>
+  <p>The agent can be steered by the model making mistakes, and by <strong>prompt injection</strong>:
+  malicious instructions hidden in a page, file or message it reads. Assume it may attempt anything
+  its tools allow. The sandbox’s job is to bound the blast radius.</p>
+</section>
+
+<section>
+  <h3>What is protected</h3>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>Boundary</th><th>Mechanism</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr><td>Host filesystem</td><td>KVM microVM with only <code>workspace/</code> mounted</td><td>The agent cannot read or write your files, except the one shared folder.</td></tr>
+      <tr><td>Host kernel</td><td>Hardware-virtualised VM, not a shared kernel</td><td>An escape needs a hypervisor breakout, not a container escape.</td></tr>
+      <tr><td>Credentials</td><td>Kept on the host, injected by the bridge; guest-sent auth headers are dropped</td><td>Keys never enter the sandbox, and it can’t smuggle its own key upstream.</td></tr>
+      <tr><td>Host model store</td><td>The Ollama route is an allowlist: inference and read-only endpoints</td><td>No <code>pull</code>/<code>create</code>/<code>delete</code> — closing a tampering path <em>and</em> an egress path.</td></tr>
+      <tr><td>Host <code>claude</code> CLI</td><td>Runs <code>claude -p</code> with tools and MCP suppressed, in an empty dir; refuses to serve unless verified</td><td>The sandbox gets text, not the ability to act on your host through your credentials.</td></tr>
+      <tr><td>Your LAN</td><td>Bridge binds the VM-only IP; Ollama stays on loopback</td><td>Neither is exposed to other machines.</td></tr>
+      <tr><td>Network egress</td><td>Host-side nftables allowlist keyed on the VM interface</td><td>Enforced on the host, so guest root cannot switch it off. Bulk exfiltration and direct C2 are blocked.</td></tr>
+      <tr><td>Spend</td><td>Per-route request and cost budgets at the bridge</td><td>A looping agent cannot spend host-held credentials without limit.</td></tr>
+      <tr><td>Auditability</td><td>Every API call logged on the host</td><td>You can review what the agent did.</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section>
+  <h3>What is not protected</h3>
+
+  <div class="note caution">
+    <span class="label">Egress is contained, not sealed</span>
+    <p>Two residual channels survive the allowlist. <strong>DNS:</strong> the guest resolves through
+    the host, so data can be encoded into subdomain lookups — low bandwidth, but enough for a key.
+    <strong>CDN fronting:</strong> an allowlisted hostname resolves to shared addresses that also
+    serve unrelated sites, so allowlisting one effectively permits others. Name-based (SNI/proxy)
+    filtering is the roadmap.</p>
+  </div>
+
+  <p><strong>The default profile is not the tightest one.</strong> <code>research</code> ships as the
+  default because a sealed default that blocks every real task teaches people to disable containment
+  permanently. No profile except <code>sealed</code> is exfiltration-proof: an allowlisted search
+  endpoint is a data channel. For untrusted input use <code>sealed</code>, or
+  <code>./kagebox task</code>, which forces it and refuses to run uncontained.</p>
+
+  <p><strong>Bounded windows expose more than the agent.</strong> <code>research</code> and
+  <code>skills</code> open egress for the duration of one operation. A warden window is scoped to
+  named destinations the <em>host</em> resolves, but an explicit full-VM window opens everything for
+  its duration.</p>
+
+  <p><strong>Approval prompts carry guest-authored text.</strong> The reason shown to you is written
+  by a process that may be prompt-injected. It is rendered as untrusted plain text, never markup —
+  but approve on whether you <em>expected</em> the request, not on how good the reason sounds.
+  Approval fatigue is the attack the rate cap exists to blunt.</p>
+
+  <p><strong><code>workspace/</code> is a code-execution path onto your host — through you.</strong>
+  The agent writes deliverables there and you open them. A <code>Makefile</code> you run to “check
+  the output”, <code>.git/hooks/*</code>, <code>.vscode/tasks.json</code>, a poisoned lockfile you
+  install — the VM boundary holds; you are the transport. Review diffs before running or opening
+  them in an auto-executing editor.</p>
+
+  <p><strong>Bot tokens live in the VM.</strong> A messaging bot’s token must sit where the bot runs.
+  It is a scoped bot credential, not your account, but a VM compromise exposes it. This is why the
+  warden’s approval bot must be a <em>different</em> bot, with its token on the host.</p>
+
+  <p><strong>The model provider sees your prompts.</strong> Cloud backends receive your task text.
+  Use the local backend for private data.</p>
+
+  <p><strong>Hypervisor and kernel 0-days.</strong> VM isolation is strong but not absolute. Keep
+  your host patched.</p>
+</section>
+
+<section>
+  <h3>Hardening checklist</h3>
+  <ul>
+    <li><code>./kagebox egress profile sealed</code> for any untrusted or web-facing task.</li>
+    <li><code>./kagebox verify</code> afterwards — assert the boundary rather than assume it loaded.
+    Every control here fails open, so one that silently didn’t apply looks exactly like one that is
+    working.</li>
+    <li>Keep secrets in <code>bridge/secrets.env</code> (host, git-ignored) — never in the VM or
+    <code>workspace/</code>.</li>
+    <li>Set a messaging allowlist so only you can drive the bot.</li>
+    <li>Review <code>./kagebox audit</code> after unattended runs.</li>
+    <li>Keep host, multipass and Ollama patched.</li>
+  </ul>
+  <p>The authoritative, always-current version of this document lives in
+  <a href="https://github.com/kunalkushwaha/Kagebox/blob/main/SECURITY.md">SECURITY.md</a>.
+  Report vulnerabilities privately to the maintainer rather than opening a public issue.</p>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap wide">
+    <p>MIT licensed — <a href="https://github.com/kunalkushwaha/Kagebox">github.com/kunalkushwaha/Kagebox</a></p>
+  </div>
+</footer>
+
+</body>
+</html>

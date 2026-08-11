@@ -1,0 +1,196 @@
+/* Kagebox docs — terminal-native, because the subject is a CLI that guards a
+   boundary. Monospace carries the display role; the accent is the same cyan the
+   tool prints its own messages in (\033[1;36m). No webfonts: a silent fallback
+   is worse than an honest system stack. */
+
+:root {
+  color-scheme: light dark;
+
+  /* Neutrals carry a slight blue bias so they read as chosen, not defaulted. */
+  --ground:      #f7f8fa;
+  --surface:     #ffffff;
+  --surface-alt: #eef1f5;
+  --line:        #d8dee8;
+  --ink:         #10151c;
+  --ink-soft:    #4a5568;
+  --ink-faint:   #6b7688;
+
+  --accent:      #0b7285;   /* cyan, darkened for contrast on light */
+  --accent-soft: #e0f2f5;
+  --warn:        #9a4a06;
+  --warn-soft:   #fdf0e3;
+  --danger:      #a02020;
+
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+
+  --measure: 68ch;
+  --radius: 6px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground:      #0d1117;
+    --surface:     #141a22;
+    --surface-alt: #1b232d;
+    --line:        #2a3441;
+    --ink:         #e6edf3;
+    --ink-soft:    #a8b3c1;
+    --ink-faint:   #7d8896;
+    --accent:      #4dd4e8;
+    --accent-soft: #10303a;
+    --warn:        #e0a458;
+    --warn-soft:   #2e2415;
+    --danger:      #f08a8a;
+  }
+}
+:root[data-theme="dark"] {
+  --ground:      #0d1117;
+  --surface:     #141a22;
+  --surface-alt: #1b232d;
+  --line:        #2a3441;
+  --ink:         #e6edf3;
+  --ink-soft:    #a8b3c1;
+  --ink-faint:   #7d8896;
+  --accent:      #4dd4e8;
+  --accent-soft: #10303a;
+  --warn:        #e0a458;
+  --warn-soft:   #2e2415;
+  --danger:      #f08a8a;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 17px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: var(--measure); margin: 0 auto; padding: 0 1.25rem; }
+.wide { max-width: 92ch; }
+
+/* --- masthead ------------------------------------------------------------ */
+header.top {
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  position: sticky; top: 0; z-index: 10;
+}
+header.top .wrap {
+  display: flex; align-items: center; gap: 1.25rem;
+  padding-top: .7rem; padding-bottom: .7rem;
+}
+.brand {
+  font-family: var(--mono); font-weight: 700; letter-spacing: -.02em;
+  color: var(--ink); text-decoration: none; font-size: .95rem; white-space: nowrap;
+}
+.brand .latch { color: var(--accent); }
+nav.top-nav { display: flex; gap: 1.1rem; margin-left: auto; flex-wrap: wrap; }
+nav.top-nav a {
+  font-family: var(--mono); font-size: .82rem; color: var(--ink-soft);
+  text-decoration: none; padding: .15rem 0; border-bottom: 2px solid transparent;
+}
+nav.top-nav a:hover, nav.top-nav a:focus-visible { color: var(--accent); border-bottom-color: var(--accent); }
+nav.top-nav a[aria-current="page"] { color: var(--ink); border-bottom-color: var(--accent); }
+
+/* --- hero ---------------------------------------------------------------- */
+.hero { padding: 3.5rem 0 2.5rem; }
+.hero pre.logo {
+  font-family: var(--mono); color: var(--accent);
+  font-size: clamp(.42rem, 1.55vw, .78rem); line-height: 1.15;
+  margin: 0 0 1.5rem; overflow-x: auto;
+}
+.hero h1 {
+  font-family: var(--mono); font-size: clamp(1.55rem, 4vw, 2.3rem);
+  line-height: 1.2; margin: 0 0 .9rem; letter-spacing: -.025em; text-wrap: balance;
+}
+.hero p.lede { font-size: 1.12rem; color: var(--ink-soft); margin: 0 0 1.6rem; text-wrap: pretty; }
+
+.cta { display: flex; gap: .7rem; flex-wrap: wrap; }
+.btn {
+  font-family: var(--mono); font-size: .86rem; text-decoration: none;
+  padding: .55rem 1rem; border-radius: var(--radius); border: 1px solid var(--line);
+  color: var(--ink); background: var(--surface); display: inline-block;
+}
+.btn:hover, .btn:focus-visible { border-color: var(--accent); color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--ground); font-weight: 600; }
+.btn.primary:hover, .btn.primary:focus-visible { filter: brightness(1.08); color: var(--ground); }
+
+/* --- prose --------------------------------------------------------------- */
+main { padding-bottom: 5rem; }
+section { padding-top: 2.75rem; }
+h2 {
+  font-family: var(--mono); font-size: 1.28rem; letter-spacing: -.02em;
+  margin: 0 0 .3rem; text-wrap: balance;
+}
+h2 .num { color: var(--accent); font-weight: 400; margin-right: .5rem; }
+h3 { font-family: var(--mono); font-size: 1rem; margin: 2rem 0 .4rem; letter-spacing: -.01em; }
+p { margin: 0 0 1rem; text-wrap: pretty; }
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+strong { font-weight: 650; }
+.sub { color: var(--ink-faint); font-size: .92rem; margin-bottom: 1.4rem; }
+
+ul, ol { padding-left: 1.15rem; margin: 0 0 1rem; }
+li { margin-bottom: .4rem; }
+li::marker { color: var(--ink-faint); }
+
+code {
+  font-family: var(--mono); font-size: .87em;
+  background: var(--surface-alt); padding: .12em .38em; border-radius: 3px;
+}
+pre {
+  font-family: var(--mono); font-size: .82rem; line-height: 1.55;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 1rem 1.1rem;
+  overflow-x: auto; margin: 0 0 1.2rem;
+}
+pre code { background: none; padding: 0; font-size: inherit; }
+pre .c { color: var(--ink-faint); }         /* comment */
+pre .p { color: var(--accent); }            /* prompt / emphasis */
+
+/* --- tables -------------------------------------------------------------- */
+.table-scroll { overflow-x: auto; margin: 0 0 1.3rem; }
+table { border-collapse: collapse; width: 100%; font-size: .92rem; }
+th, td { text-align: left; padding: .55rem .8rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+th {
+  font-family: var(--mono); font-size: .74rem; text-transform: uppercase;
+  letter-spacing: .07em; color: var(--ink-faint); font-weight: 600;
+  border-bottom-color: var(--ink-faint);
+}
+td code { white-space: nowrap; }
+tbody tr:last-child td { border-bottom: none; }
+
+/* --- callouts ------------------------------------------------------------ */
+.note {
+  border-left: 3px solid var(--accent); background: var(--accent-soft);
+  padding: .9rem 1.1rem; border-radius: 0 var(--radius) var(--radius) 0; margin: 0 0 1.3rem;
+}
+.note.caution { border-left-color: var(--warn); background: var(--warn-soft); }
+.note p:last-child { margin-bottom: 0; }
+.note .label {
+  font-family: var(--mono); font-size: .72rem; text-transform: uppercase;
+  letter-spacing: .08em; color: var(--accent); display: block; margin-bottom: .25rem;
+}
+.note.caution .label { color: var(--warn); }
+
+/* --- the boundary diagram ------------------------------------------------ */
+.diagram {
+  font-family: var(--mono); font-size: clamp(.6rem, 1.5vw, .78rem); line-height: 1.5;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 1.2rem; overflow-x: auto; margin: 0 0 1.3rem; color: var(--ink-soft);
+}
+.diagram b { color: var(--accent); font-weight: 600; }
+.diagram .host { color: var(--ink); }
+
+footer {
+  border-top: 1px solid var(--line); padding: 2rem 0 3rem;
+  color: var(--ink-faint); font-size: .87rem;
+}
+footer a { color: var(--ink-soft); }
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }

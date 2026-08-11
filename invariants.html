@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Security invariants — Kagebox</title>
+<meta name="description" content="The properties Kagebox claims, the attacks that test each one, and an honest list of what is not covered.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>📦</text></svg>">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap wide">
+    <a class="brand" href="index.html">kagebox<span class="latch">┤──▪</span></a>
+    <nav class="top-nav">
+      <a href="index.html">Overview</a>
+      <a href="security.html">Threat model</a>
+      <a href="invariants.html" aria-current="page">Invariants</a>
+      <a href="https://github.com/kunalkushwaha/Kagebox">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap wide">
+
+<section>
+  <h2>Security invariants</h2>
+  <p class="sub">Written down so they can be argued with, and tested rather than believed.</p>
+  <p>Every control in this project fails <strong>open</strong>. A firewall rule that silently didn’t
+  load, a flag a CLI quietly stopped accepting, a header that stopped being stripped — each looks
+  exactly like a working control right up until it matters. Features announce their own breakage;
+  boundaries do not. So the boundary gets its own tests, and they are written as <em>attacks</em>.</p>
+</section>
+
+<section>
+  <h3>The invariants</h3>
+  <div class="table-scroll">
+  <table>
+    <thead><tr><th>#</th><th>Invariant</th><th>Tested by</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td><strong>Credential</strong> — the guest never receives long-lived provider credentials, and cannot smuggle its own to an upstream.</td><td><code>test_invariants.py</code>, <code>adversarial.sh</code></td></tr>
+      <tr><td>2</td><td><strong>Host-control</strong> — the guest cannot modify or read the authoritative host egress policy, even as root.</td><td><code>adversarial.sh</code></td></tr>
+      <tr><td>3</td><td><strong>Claude</strong> — the <code>/claude</code> route is unavailable unless the CLI is verified to suppress host-side tools and MCP.</td><td><code>test_gateway.py</code></td></tr>
+      <tr><td>4</td><td><strong>Ollama</strong> — the guest cannot reach model management, however the path is spelled, nor use Ollama as a host-side network pivot.</td><td><code>test_invariants.py</code>, <code>adversarial.sh</code></td></tr>
+      <tr><td>5</td><td><strong>Egress</strong> — access is denied unless permitted by current host policy; an allowlist entry names a <em>service</em>, not an address.</td><td><code>test_egress_allowlist.sh</code>, <code>test_egress_profiles.sh</code></td></tr>
+      <tr><td>6</td><td><strong>Reboot</strong> — a host reboot creates no period of unintended guest internet access.</td><td><code>adversarial.sh</code> after a reboot <em>(see gaps)</em></td></tr>
+      <tr><td>7</td><td><strong>Workspace</strong> — files produced by the guest are treated as untrusted until reviewed.</td><td><code>adversarial.sh</code></td></tr>
+      <tr><td>8</td><td><strong>Warden</strong> — guest code cannot self-authorize an egress window; it can ask, only a human grants.</td><td><code>test_warden_scope.py</code>, <code>adversarial.sh</code></td></tr>
+      <tr><td>9</td><td><strong>Budget</strong> — a compromised agent cannot exceed configured spend limits indefinitely.</td><td><code>test_budget.py</code></td></tr>
+      <tr><td>10</td><td><strong>Reporting</strong> — Kagebox never claims a posture it did not observe.</td><td><code>test_setup_posture.sh</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="note">
+    <span class="label">Why #10 is on the list</span>
+    <p><code>setup</code> used to print <code>egress: contained</code> unconditionally, so a declined
+    sudo prompt still ended with a reassuring green banner. A boundary you <em>believe</em> in but do
+    not have is worse than a known-open one.</p>
+  </div>
+</section>
+
+<section>
+  <h3>Running them</h3>
+<pre><code><span class="c"># Offline half — no VM, no sudo, no network. Runs in CI on every push.</span>
+python3 tests/test_invariants.py     <span class="c"># attacks the pure boundary logic</span>
+python3 tests/test_gateway.py        <span class="c"># bridge containment</span>
+python3 tests/test_warden_scope.py   <span class="c"># the warden cannot be talked into granting</span>
+python3 tests/test_budget.py         <span class="c"># spend caps</span>
+bash    tests/test_egress_allowlist.sh
+bash    tests/test_egress_profiles.sh
+bash    tests/test_setup_posture.sh
+
+<span class="c"># Live half — needs a provisioned, running VM.</span>
+bash tests/adversarial.sh
+./kagebox verify</code></pre>
+  <p><code>adversarial.sh</code> attacks from <em>inside</em> the sandbox: it tries to read the host
+  ruleset, flush its way out, reach non-allowlisted destinations over v4 and v6, find a credential,
+  see a host process or socket, open <code>/dev/kvm</code>, and open its own door.</p>
+</section>
+
+<section>
+  <h3>Known gaps</h3>
+  <p class="sub">A suite that looks complete is worse than one that admits its edges.</p>
+  <ul>
+    <li><strong>Reboot ordering is not automated.</strong> The egress unit is ordered before
+    <code>multipassd</code>, but nothing here reboots a host to prove it.</li>
+    <li><strong>The port-scoping probe is weak.</strong> A refusal on an unlisted port doesn’t prove
+    the firewall caused it — the remote may simply not listen there.</li>
+    <li><strong>No agent-level injection tests.</strong> Prompt injection from a web page, a
+    <code>workspace/</code> file, a malicious skill or package is the category most likely to matter
+    in practice and the least covered.</li>
+    <li><strong>CDN fronting is unaddressed by design, not omission.</strong> An IP allowlist cannot
+    separate a hostname from its neighbours on a shared front end.</li>
+    <li><strong>The suite runs as the operator, not as an attacker with a 0-day.</strong> It tests
+    the controls as designed; it does not attempt hypervisor escape.</li>
+  </ul>
+  <p>If you fix a boundary bug, add the attack that would have caught it. A regression test written
+  after the fact is the only part of the fix that keeps working. The current version lives in
+  <a href="https://github.com/kunalkushwaha/Kagebox/blob/main/INVARIANTS.md">INVARIANTS.md</a>.</p>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap wide">
+    <p>MIT licensed — <a href="https://github.com/kunalkushwaha/Kagebox">github.com/kunalkushwaha/Kagebox</a></p>
+  </div>
+</footer>
+
+</body>
+</html>
