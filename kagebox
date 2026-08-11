@@ -26,7 +26,8 @@
 #                         runs the task, then re-seals. Not containment — see -h.
 #   ./kagebox backup      snapshot Hermes memory/state to the host (survives VM loss)
 #   ./kagebox restore     restore Hermes memory/state from the host backup
-#   ./kagebox egress ...  host-enforced egress allowlist for the VM (on|off|status|refresh)
+#   ./kagebox egress ...  host-enforced egress allowlist (on|off|status|refresh)
+#   ./kagebox egress profile <name>   pick a network policy: sealed|research|dev|open
 #   ./kagebox verify      assert the sandbox boundary from inside the VM (fail-closed)
 #   ./kagebox audit       review the sandbox's bridge API-call log
 #   ./kagebox usage       token/cost usage per provider (from the bridge)
@@ -415,7 +416,16 @@ cmd_setup() {
   if [ "$contained" = 1 ] && [ "$vrc" = 0 ]; then
     cat <<EOF
 
-$(printf '\033[1;32m✓ Sandbox ready.\033[0m')  (egress: contained — allowlist in vm/egress-allowlist.txt)
+$(printf '\033[1;32m✓ Sandbox ready.\033[0m')  (egress: contained — profile '${EGRESS_PROFILE:-research}')
+
+  The agent can reach the destinations in that profile, plus anything you add
+  to vm/egress-allowlist.txt. It cannot reach arbitrary sites, exfiltrate in
+  bulk, or dial out to a command-and-control host.
+
+  Tighten (untrusted input):  ./kagebox egress profile sealed
+  Loosen  (coding work):      ./kagebox egress profile dev
+  Profiles:                   ./kagebox egress profile
+
   Enter it:     ./kagebox shell     (then type: hermes)
   Verify:       ./kagebox verify     ·  Open egress: ./kagebox egress off
   Status:       ./kagebox status
@@ -465,9 +475,45 @@ cmd_egress() {
   # root agent in the VM cannot remove it. Needs sudo; works whether or not the
   # VM is running. The in-guest vm/egress-apply.sh remains only as defence-in-depth.
   local action="${1:-status}"
-  [ "$action" = status ] || msg "egress $action — host-enforced on '$BRIDGE_IFACE' (needs sudo; the guest cannot alter this)"
+  # `profile` is a kagebox-level verb: pick the named policy, then re-apply.
+  if [ "$action" = profile ]; then
+    local want="${2:-}"
+    if [ -z "$want" ]; then
+      echo "active profile: ${EGRESS_PROFILE:-research}"
+      echo "available:"
+      for f in "$HERE"/vm/profiles/*.txt; do
+        [ -e "$f" ] || continue
+        local n; n="$(basename "$f" .txt)"
+        printf '  %-9s %s\n' "$n" "$(sed -n 's/^# Profile: [a-z-]* — //p' "$f" | head -1)"
+      done
+      printf '  %-9s %s\n' "open" "no allowlist at all — the VM has the whole internet"
+      echo "switch with: ./kagebox egress profile <name>"
+      return 0
+    fi
+    case "$want" in
+      open) ;;
+      *[!a-z0-9_-]*) die "'$want' is not a valid profile name" ;;
+      *) [ -f "$HERE/vm/profiles/$want.txt" ] || die "no such profile '$want' (try: ./kagebox egress profile)" ;;
+    esac
+    # Persist the choice so it survives reboots and the refresh timer.
+    if grep -qE '^[[:space:]]*EGRESS_PROFILE=' "$HERE/kagebox.env"; then
+      sed -i "s|^[[:space:]]*EGRESS_PROFILE=.*|EGRESS_PROFILE=$want|" "$HERE/kagebox.env"
+    else
+      printf '\n# Egress policy profile (see vm/profiles/).\nEGRESS_PROFILE=%s\n' "$want" >> "$HERE/kagebox.env"
+    fi
+    EGRESS_PROFILE="$want"
+    if [ "$want" = open ]; then
+      warn "profile 'open' — the VM gets the whole internet. Containment is OFF."
+      cmd_egress off; return
+    fi
+    msg "profile -> $want; applying..."
+    cmd_egress on; return
+  fi
+  [ "$action" = status ] || msg "egress $action — host-enforced on '$BRIDGE_IFACE', profile '${EGRESS_PROFILE:-research}' (needs sudo; the guest cannot alter this)"
   sudo BRIDGE_IFACE="$BRIDGE_IFACE" BRIDGE_PORT="$BRIDGE_PORT" \
        EGRESS_ALLOWFILE="$HERE/vm/egress-allowlist.txt" \
+       EGRESS_PROFILE="${EGRESS_PROFILE:-research}" \
+       EGRESS_PROFILE_DIR="$HERE/vm/profiles" \
        bash "$HERE/bridge/host-egress.sh" "$action"
 }
 

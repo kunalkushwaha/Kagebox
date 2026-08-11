@@ -102,10 +102,32 @@ inside the VM and still can't open it. But real work (search, skills, package in
 needs the internet sometimes. Rather than punch a permanent hole, Kagebox opens
 *bounded windows* and closes them again:
 
+Egress runs under a named **profile** you choose — a starting point, never a ceiling,
+since your own `vm/egress-allowlist.txt` is layered on top of whichever is active:
+
+| Profile | Reaches | For |
+|---|---|---|
+| `sealed` | the model bridge and nothing else | untrusted input; `./kagebox task` forces it |
+| `research` **(default)** | search, Wikipedia, arxiv, Crossref, HN | reading and writing |
+| `dev` | research + PyPI, npm, crates, Go, GitHub, docs | coding agents |
+| `open` | everything | you've decided |
+
+```bash
+./kagebox egress profile          # list them
+./kagebox egress profile dev      # switch, and re-apply
+```
+
+**The default is `research`, deliberately.** A sealed default that blocks every real
+task teaches people to run `egress off` once and never turn it back on — a curated
+default is more contained in practice than a strict one nobody keeps. But no profile
+short of `sealed` is exfiltration-proof: an allowlisted search endpoint is a data
+channel, a query string at a time. Profiles bound the blast radius; they don't make
+the agent safe to point at hostile input.
+
+On top of the profile, two bounded escapes for what an allowlist can't express:
+
 | Posture | How it opens | Good for |
 |---|---|---|
-| **Sealed** (default) | — | untrusted input; the agent reaches the model bridge and nothing else |
-| **Allowlist** | add hosts to `vm/egress-allowlist.txt`, `./kagebox egress on` | a few known, stable endpoints |
 | **Window** | `./kagebox skills …` / `./kagebox research "…"` | you're at a keyboard; opens for the run, re-seals after (even on Ctrl-C) |
 | **Approved window** | `./kagebox warden setup`, then the agent asks | you're on your phone; the sandbox requests, **you tap approve** |
 

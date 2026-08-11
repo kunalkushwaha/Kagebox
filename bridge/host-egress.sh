@@ -72,11 +72,43 @@ resolve_one() {
 # databases, mail, admin panels — which an IP-only rule silently permitted.
 DEFAULT_PORTS="${EGRESS_DEFAULT_PORTS:-443,80}"
 
+# --- profiles (#: named policies) --------------------------------------------
+# A profile is a starting point, never a ceiling: the user's own allowlist is
+# always layered ON TOP of it, so switching to `sealed` for one risky job does
+# not lose the entries they added, and switching to `dev` does not silently
+# drop them either.
+PROFILE="${EGRESS_PROFILE:-research}"
+PROFILE_DIR="${EGRESS_PROFILE_DIR:-$HERE/vm/profiles}"
+# The name indexes a path, so constrain it before it can climb out of the dir.
+case "$PROFILE" in
+  ''|*[!a-z0-9_-]*) die "EGRESS_PROFILE '$PROFILE' is not a valid profile name" ;;
+esac
+
+# Emit the profile's entries, following one `# extends: <profile>` header so
+# `dev` can build on `research` without duplicating it. Depth-guarded: a cycle
+# would otherwise loop forever with the door open.
+profile_lines() {
+  local name="$1" depth="${2:-0}" file="$PROFILE_DIR/$1.txt" parent
+  [ "$depth" -gt 4 ] && { echo "host-egress: WARNING: profile 'extends' nested too deep at '$name' — stopping" >&2; return 0; }
+  case "$name" in *[!a-z0-9_-]*) echo "host-egress: WARNING: ignoring bad profile name '$name'" >&2; return 0 ;; esac
+  [ -f "$file" ] || { echo "host-egress: WARNING: profile '$name' not found at $file — treating as empty (sealed)" >&2; return 0; }
+  parent="$(sed -n 's/^#[[:space:]]*extends:[[:space:]]*\([a-z0-9_-]*\).*/\1/p' "$file" | head -1)"
+  [ -n "$parent" ] && profile_lines "$parent" $((depth+1))
+  cat "$file"
+}
+
+# Every source of allowlist entries, profile first then the user's own.
+allow_sources() {
+  [ "$PROFILE" = open ] && return 0          # `open` means no table at all
+  profile_lines "$PROFILE"
+  [ -f "$ALLOWFILE" ] && cat "$ALLOWFILE"
+  return 0
+}
+
 # Emit `IP . PORT` pairs, one per line, for the nft concat set.
 resolve_pairs() {
-  [ -f "$ALLOWFILE" ] || return 0
   local entry h ports got ip p
-  grep -vE '^[[:space:]]*#|^[[:space:]]*$' "$ALLOWFILE" | awk '{print $1}' | while read -r entry; do
+  allow_sources | grep -vE '^[[:space:]]*#|^[[:space:]]*$' | awk '{print $1}' | sort -u | while read -r entry; do
     case "$entry" in
       *:*) h="${entry%%:*}"; ports="${entry#*:}" ;;
       *)   h="$entry";       ports="$DEFAULT_PORTS" ;;
@@ -188,7 +220,8 @@ install_unit() {   # boot-time restore, so containment precedes the VM (#12)
   command -v systemctl >/dev/null 2>&1 || return 0
   [ -f "$HERE/bridge/kagebox-egress.service" ] || return 0
   local tmp; tmp="$(mktemp)"
-  sed "s|__KAGEBOX_DIR__|$HERE|g" "$HERE/bridge/kagebox-egress.service" > "$tmp"
+  sed -e "s|__KAGEBOX_DIR__|$HERE|g" -e "s|__EGRESS_PROFILE__|$PROFILE|g" \
+      "$HERE/bridge/kagebox-egress.service" > "$tmp"
   if ! cmp -s "$tmp" "$UNITFILE" 2>/dev/null; then
     mv "$tmp" "$UNITFILE" && chmod 0644 "$UNITFILE"
     systemctl daemon-reload 2>/dev/null || true
@@ -206,7 +239,9 @@ install_cron() {   # host-side refresh so CDN/rotating allowlist IPs don't go st
   cat > "$CRONFILE" <<EOF
 # Kagebox host-side egress — re-resolve allowlisted domains (CDN/rotating IPs).
 # Managed by bridge/host-egress.sh; removed on 'egress off'.
-*/10 * * * * root BRIDGE_IFACE=$IFACE BRIDGE_PORT=$PORT EGRESS_ALLOWFILE='$ALLOWFILE' '$SELF' refresh >/dev/null 2>&1
+# EGRESS_PROFILE must be carried here: without it the refresh would rebuild the
+# set from the DEFAULT profile, silently widening a 'sealed' box every 10 min.
+*/10 * * * * root BRIDGE_IFACE=$IFACE BRIDGE_PORT=$PORT EGRESS_ALLOWFILE='$ALLOWFILE' EGRESS_PROFILE='$PROFILE' EGRESS_PROFILE_DIR='$PROFILE_DIR' '$SELF' refresh >/dev/null 2>&1
 EOF
   chmod 644 "$CRONFILE" 2>/dev/null || true
 }

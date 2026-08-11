@@ -1,0 +1,16 @@
+# Profile: sealed — the tightest posture.
+#
+# No external destination at all. The agent reaches the bridge (so models still
+# work) and the host DNS resolver, and nothing else. Bulk exfiltration and
+# direct command-and-control are closed.
+#
+# Use this when the agent will read input you do not control: a web page, a
+# downloaded file, someone else's repository, a message from a stranger. This
+# is also what `./kagebox task` forces, regardless of your configured profile.
+#
+# Deliberately empty. Add nothing here — put your own entries in
+# vm/egress-allowlist.txt, which is layered on top of whichever profile is
+# active, so switching to `sealed` for one risky job does not lose them.
+#
+# Residual even here: DNS lookups still resolve through the host, which is a
+# low-bandwidth channel out. See SECURITY.md.

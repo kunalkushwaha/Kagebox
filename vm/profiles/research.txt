@@ -1,0 +1,40 @@
+# Profile: research — the default. Read-mostly destinations for finding things out.
+#
+# Chosen so an agent can actually do research — search, look things up, read
+# papers and news — without being able to reach arbitrary hosts. Everything here
+# is a well-known, high-traffic endpoint that is read from far more than written
+# to, and each is pinned to :443.
+#
+# BE CLEAR ABOUT WHAT THIS IS. It bounds the blast radius; it does not make the
+# agent safe to point at hostile input:
+#
+#   * An allowlisted search endpoint is a data channel. A query string can carry
+#     a key out one search at a time. That is low bandwidth, not zero.
+#   * These names sit on shared CDN front-ends, so allowlisting one permits
+#     whatever else answers on the same addresses. Port-scoping does not help —
+#     the neighbours are on :443 too.
+#   * Following a search RESULT to some other domain still fails, by design. For
+#     open-ended browsing use `./kagebox research "..."` or a warden window,
+#     which are bounded and (for the warden) approved per destination.
+#
+# For untrusted input, switch to sealed: ./kagebox egress profile sealed
+
+# --- search ---
+duckduckgo.com:443
+html.duckduckgo.com:443           # the no-JS endpoint most scrapers actually hit
+lite.duckduckgo.com:443
+
+# --- reference ---
+en.wikipedia.org:443
+en.m.wikipedia.org:443
+upload.wikimedia.org:443          # images/assets referenced by article pages
+
+# --- papers and citations ---
+arxiv.org:443
+export.arxiv.org:443              # the arxiv skill's API endpoint
+api.crossref.org:443              # DOI / citation metadata
+api.semanticscholar.org:443
+
+# --- news and discussion ---
+hn.algolia.com:443                # Hacker News search API
+news.ycombinator.com:443

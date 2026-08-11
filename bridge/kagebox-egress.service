@@ -20,6 +20,10 @@ RemainAfterExit=yes
 Environment=BRIDGE_IFACE=mpqemubr0
 Environment=BRIDGE_PORT=18080
 Environment=EGRESS_ALLOWFILE=__KAGEBOX_DIR__/vm/egress-allowlist.txt
+# Stamped in at install time. Without it a reboot would restore the DEFAULT
+# profile rather than the one the operator chose — widening a sealed box.
+Environment=EGRESS_PROFILE=__EGRESS_PROFILE__
+Environment=EGRESS_PROFILE_DIR=__KAGEBOX_DIR__/vm/profiles
 ExecStart=/usr/bin/env bash __KAGEBOX_DIR__/bridge/host-egress.sh boot
 # If the table cannot be loaded, this unit fails LOUDLY rather than letting the
 # machine come up with a sandbox that believes it is contained.

@@ -57,6 +57,22 @@ bound the blast radius.
   `verify` treats "egress open while containment is configured on" as a
   **[FAIL]**, not a note — a rule that silently did not load is the exact
   failure this command exists to catch.
+- **Egress runs under a named profile, and the default is not the tightest
+  one.** `sealed` (bridge only), `research` (**default** — search, Wikipedia,
+  arxiv, Crossref, HN), `dev` (research + package registries and GitHub), or
+  `open`. Set `EGRESS_PROFILE` in `kagebox.env` or run `./kagebox egress profile
+  <name>`; your own `vm/egress-allowlist.txt` is layered on top of whichever is
+  active, so a profile is a floor and never a ceiling. The chosen profile is
+  carried into the refresh timer and the boot unit — otherwise either would
+  rebuild the set from the default and silently widen a sealed box.
+  **Why the default is not `sealed`:** a default that blocks every useful task
+  teaches people to run `egress off` permanently, which is strictly worse than a
+  curated allowlist. That is a usability judgement with a security cost, stated
+  plainly: **no profile except `sealed` is exfiltration-proof.** An allowlisted
+  search endpoint is a data channel — a query string can carry a key out, slowly
+  — and CDN-fronted names drag their neighbours along. Profiles bound the blast
+  radius; they do not make the agent safe to point at hostile input. For that,
+  use `sealed` or `./kagebox task`, which forces it.
 - **The allowlist is scoped to destination *and port*.** An entry is
   `hostname[:port[,port…]]`, defaulting to 443 and 80 — allowlisting a name does
   not open every port on the addresses it resolves to. This closes the non-web

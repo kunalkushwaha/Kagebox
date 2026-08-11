@@ -16,9 +16,22 @@ ROOT="$(dirname "$HERE")"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-awk '/^DEFAULT_PORTS=/{print} /^resolve_pairs\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
-  "$ROOT/bridge/host-egress.sh" > "$WORK/lib.sh"
+# resolve_pairs reads through allow_sources (profile + the operator's file), so
+# pull the profile plumbing in too and pin PROFILE=sealed — that contributes no
+# destinations of its own, leaving these cases testing the parser alone.
+{
+  echo 'die(){ echo "die: $*" >&2; return 1; }'
+  echo "HERE='$ROOT'"
+  awk '/^DEFAULT_PORTS=/{print}' "$ROOT/bridge/host-egress.sh"
+  awk '/^# --- profiles/{f=1} /^# Emit `IP \. PORT`/{f=0} f' "$ROOT/bridge/host-egress.sh"
+  awk '/^resolve_pairs\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' "$ROOT/bridge/host-egress.sh"
+} > "$WORK/lib.sh"
 grep -q 'resolve_pairs' "$WORK/lib.sh" || { echo "could not extract resolve_pairs()"; exit 1; }
+grep -q 'allow_sources' "$WORK/lib.sh" || { echo "could not extract allow_sources()"; exit 1; }
+# Set these BEFORE sourcing: the extracted plumbing derives PROFILE/PROFILE_DIR
+# from the environment, so assigning the shell vars directly would be overwritten.
+export EGRESS_PROFILE=sealed
+export EGRESS_PROFILE_DIR="$ROOT/vm/profiles"
 
 # Stub name resolution: deterministic, offline.
 resolve_one() {

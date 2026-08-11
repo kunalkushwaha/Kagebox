@@ -1,0 +1,47 @@
+# extends: research
+#
+# Profile: dev — research, plus the registries a coding agent needs.
+#
+# This is a deliberately looser posture and you should know what it costs.
+# Package registries are the sharpest edge here, in both directions:
+#
+#   * They accept uploads. An allowlisted registry is a publish endpoint, and
+#     publishing is exfiltration with extra steps.
+#   * Installing a package RUNS its code inside the VM. The sandbox contains
+#     that, which is the point — but "contained" is not "harmless", and a
+#     malicious dependency now has your allowlist to work with.
+#
+# Use it when the agent is writing code against sources you trust. For reviewing
+# an unfamiliar repository, or anything that arrived from outside, drop back:
+#   ./kagebox egress profile sealed   (or use ./kagebox task, which forces it)
+
+# --- Python ---
+pypi.org:443
+files.pythonhosted.org:443
+
+# --- JavaScript ---
+registry.npmjs.org:443
+
+# --- Rust ---
+crates.io:443
+static.crates.io:443
+
+# --- Go ---
+proxy.golang.org:443
+sum.golang.org:443
+
+# --- source hosting (CDN-fronted; see the caveat in research.txt) ---
+github.com:443
+api.github.com:443
+raw.githubusercontent.com:443
+codeload.github.com:443
+objects.githubusercontent.com:443
+
+# --- documentation ---
+docs.python.org:443
+developer.mozilla.org:443
+pkg.go.dev:443
+
+# --- OS packages (uncomment if the agent must apt-get while contained) ---
+# archive.ubuntu.com:80
+# security.ubuntu.com:80
