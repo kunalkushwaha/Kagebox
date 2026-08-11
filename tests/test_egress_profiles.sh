@@ -81,5 +81,21 @@ ck "boot unit carries EGRESS_PROFILE" \
 ck "boot unit's profile is stamped at install time" \
    "$(grep -c '__EGRESS_PROFILE__' "$ROOT/bridge/host-egress.sh")" "1"
 
+echo
+echo "the nft ruleset heredoc executes as root — no command substitution in it:"
+# The heredoc is deliberately UNQUOTED so $TABLE/$IFACE expand. That also means a
+# backtick or dollar-paren anywhere inside it — including in a COMMENT — is run
+# by the shell, as root, during `egress on`. This shipped once: prose containing
+# 'flags timeout' in backticks made sudo run `flags` as a command.
+subs="$(awk '/nft -f - <<EOF/{f=1} f{ if ($0 ~ /`/ || $0 ~ /\$\(/) print NR": "$0 } /^EOF$/{if(f) exit}' \
+        "$ROOT/bridge/host-egress.sh")"
+if [ -z "$subs" ]; then
+  printf '  [ok]   no backticks or $(...) inside the root-executed heredoc\n'; pass=$((pass+1))
+else
+  printf '  [FAIL] command substitution inside the root-executed heredoc:\n'
+  printf '%s\n' "$subs" | sed 's/^/         /'
+  fail=$((fail+1))
+fi
+
 printf '\n  Summary: %d ok · %d FAIL\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -164,10 +164,13 @@ table $TABLE {
   # timer — which flushes and repopulates allow4 — cannot wipe a live window,
   # and so a grant can never be mistaken for permanent policy.
   #
-  # `flags timeout` puts expiry in the KERNEL: each element carries its own
+  # 'flags timeout' puts expiry in the KERNEL: each element carries its own
   # lifetime and the kernel drops it when it runs out. The window therefore
   # closes even if the warden is killed -9, the host is under load, or userspace
-  # never runs again. That is a stronger guarantee than any `finally` block.
+  # never runs again. That is a stronger guarantee than any userspace cleanup.
+  # NOTE: this heredoc is UNQUOTED so the table/iface variables expand, which
+  # means shell command substitution in here RUNS AS ROOT. Keep prose in this
+  # block free of backticks and dollar-paren. A test asserts it.
   set grant4 { type ipv4_addr . inet_service; flags timeout; }
 
   # --- guest -> beyond-host (routed/NAT'd): the containment control ---------
