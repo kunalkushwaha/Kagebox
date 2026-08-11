@@ -183,7 +183,12 @@ vm_provision() {
 
 vm_backend() {
   vm_exists || die "VM '$VM_NAME' does not exist; run: ./kagebox setup"
-  local b="${1:-}" route model ctx provider="custom"
+  # $2 optionally overrides the model for this backend, e.g.
+  #   ./kagebox backend ollama gemma4:31b-cloud
+  # For the ollama route this is NOT the same as editing HERMES_MODEL_NAME —
+  # that names the model `./kagebox model` BUILDS with `ollama create`, so
+  # pointing it at a pulled model would clobber it on the next build.
+  local b="${1:-}" want_model="${2:-}" route model ctx provider="custom"
   case "$b" in
     ollama) route="/v1";        model="$HERMES_MODEL_NAME";            ctx="$HERMES_NUM_CTX" ;;
     claude) route="/claude/v1"; model="${CLAUDE_BRIDGE_MODEL:-sonnet}"; ctx=200000 ;;
@@ -208,6 +213,19 @@ PY
 ) || die "unknown backend '$b' — add it to bridge/providers.json (see: ./kagebox providers)"
       { read -r route; read -r model; read -r ctx; read -r provider; } <<<"$spec" ;;
   esac
+  if [ -n "$want_model" ]; then
+    model="$want_model"
+    # Take the model's real context window when it advertises one, rather than
+    # inheriting a number tuned for a different model.
+    local adv
+    adv="$(curl -s --max-time 10 "http://127.0.0.1:11434/api/show" -d "{\"model\":\"$model\"}" 2>/dev/null \
+           | python3 -c 'import json,sys
+try:
+    mi=(json.load(sys.stdin).get("model_info") or {})
+    print(next((v for k,v in mi.items() if k.endswith("context_length")), ""))
+except Exception: print("")' 2>/dev/null)"
+    case "$adv" in ''|*[!0-9]*) ;; *) ctx="$adv"; msg "using the model's advertised context: $ctx" ;; esac
+  fi
   msg "Pointing Hermes at the '${b}' backend (provider ${provider}, ${route}, model ${model})..."
   multipass exec "$VM_NAME" -- env ROUTE="$route" MODEL="$model" PORT="$BRIDGE_PORT" CTX="$ctx" PROVIDER="$provider" bash -lc '
     GW=$(ip route | awk "/^default/{print \$3; exit}")
@@ -1107,7 +1125,7 @@ case "${1:-}" in
   model) build_model ;;
   provision) vm_provision; verify ;;
   claude) vm_claude_setup ;;
-  backend) vm_backend "${2:-}" ;;
+  backend) shift; vm_backend "${1:-}" "${2:-}" ;;
   verify) verify ;;
   destroy) cmd_destroy ;;
   bridge)

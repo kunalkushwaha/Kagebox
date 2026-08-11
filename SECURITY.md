@@ -194,8 +194,16 @@ bound the blast radius.
 - **Hypervisor / kernel 0-days.** VM isolation is strong but not absolute — a
   QEMU/KVM breakout would defeat it. Keep your host patched.
 - **The model provider sees your prompts.** When using a cloud backend (Gemini,
-  Claude), your task text is sent to that provider. Use the local backend for
-  private data.
+  Claude), your task text is sent to that provider.
+  **"Ollama" no longer implies local.** Ollama can serve cloud-hosted models
+  (tags ending `-cloud`, e.g. `gemma4:31b-cloud`), which run on Ollama's
+  servers: the request leaves your machine even though the backend is named
+  `ollama` and the endpoint is `127.0.0.1`. Containment is unaffected — the
+  sandbox still reaches only the bridge, and Ollama's credentials stay on the
+  host — but the **privacy** property does not hold. Check with
+  `ollama list`: a cloud model shows no size. For genuinely private work pick a
+  model with local weights. Note also that `./kagebox usage` prices the
+  `ollama` route at zero, so cloud-model spend does **not** appear there.
 
 ## Invariants, and testing them adversarially
 
