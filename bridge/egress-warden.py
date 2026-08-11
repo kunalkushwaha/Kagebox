@@ -133,7 +133,19 @@ def tg(method, params=None, timeout=30):
         with urllib.request.urlopen(url, data=data, timeout=timeout) as r:
             return json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
-        log(f"telegram {method} HTTP {e.code}")
+        # Telegram puts the actionable part in the body, not the status line.
+        # "chat not found" in particular means the approver has never messaged
+        # the bot — a bot cannot open a conversation — which is a setup problem
+        # the operator can fix in ten seconds IF we say so.
+        desc = ""
+        try:
+            desc = (json.loads(e.read().decode()) or {}).get("description", "")
+        except Exception:
+            pass
+        log(f"telegram {method} HTTP {e.code}{': ' + desc if desc else ''}")
+        if "chat not found" in desc.lower():
+            log("  -> open your WARDEN bot in Telegram and send it /start, then retry. "
+                "A bot cannot message you until you have messaged it once.")
     except Exception as e:
         log(f"telegram {method} failed: {e}")
     return None
@@ -473,7 +485,43 @@ def _bye(signum, _frame):
     sys.exit(0)
 
 
+def selftest():
+    """Prove the approval channel actually reaches a human, at setup time.
+
+    An approval mechanism that cannot deliver its prompt is not a safe default —
+    it is a mechanism that denies everything, discovered at the worst moment.
+    """
+    if not TOKEN:
+        log("no WARDEN_BOT_TOKEN configured — every request would be denied")
+        return 1
+    if not ALLOWED:
+        log("no WARDEN_ALLOWED_USERS configured — every request would be denied")
+        return 1
+    me = tg("getMe")
+    if not me or not me.get("ok"):
+        log("the bot token was rejected by Telegram — check it and re-run setup")
+        return 1
+    uname = (me.get("result") or {}).get("username", "?")
+    log(f"token OK — approvals will come from @{uname}")
+    ok = 0
+    for uid in ALLOWED:
+        r = tg("sendMessage", {"chat_id": uid,
+                               "text": "✅ Kagebox warden is set up. Approval "
+                                       "requests from the sandbox will arrive here."})
+        if r and r.get("ok"):
+            log(f"delivered a test message to {uid}"); ok += 1
+        else:
+            log(f"COULD NOT deliver to {uid} — that approver will never see a request")
+    if not ok:
+        log("no approver is reachable, so every window would be denied. Fix this "
+            "before relying on it.")
+        return 1
+    return 0
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "selftest":
+        sys.exit(selftest())
     if len(sys.argv) > 1 and sys.argv[1] == "seal-if-open":
         # Used by systemd ExecStopPost: re-seal ONLY if a window was open, so
         # stopping the warden never overrides a deliberate `egress off`.

@@ -712,6 +712,9 @@ warden_setup() {
   You need a SECOND Telegram bot, separate from the one in the VM:
     1. Message @BotFather -> /newbot  (name it e.g. "kagebox warden")
     2. Copy the token it gives you.
+    3. OPEN YOUR NEW BOT AND SEND IT /start  <-- do not skip this.
+       Telegram bots cannot open a conversation with you; until you message it
+       once, it CANNOT send you approval prompts and every request is denied.
   Why separate: the in-VM bot's token sits inside the sandbox. If the sandbox
   is ever compromised it holds that credential — so it must not be the one
   guarding the door. This token stays on the host, readable only by root.
@@ -742,7 +745,16 @@ INTRO
   # The gateway needs the new /egress/request route and the socket path.
   bridge_restart >/dev/null 2>&1 || true
   warden_install_helper
-  msg "warden ready — the sandbox can now ask; only your tap opens the door."
+  # An approval channel that cannot deliver is a mechanism that denies
+  # everything, discovered the first time it matters. Prove it now.
+  msg "checking the approval channel can actually reach you..."
+  if sudo WARDEN_CONF="$WARDEN_CONF" python3 "$HERE/bridge/egress-warden.py" selftest; then
+    msg "warden ready — the sandbox can now ask; only your tap opens the door."
+  else
+    warn "WARDEN INSTALLED BUT CANNOT REACH YOU — every request will be denied."
+    warn "Most likely: you have not sent /start to the warden bot yet. Do that,"
+    warn "then re-check with: ./kagebox warden test"
+  fi
   warden_status
 }
 
@@ -823,9 +835,10 @@ cmd_warden() {
     setup|install) warden_setup ;;
     status) warden_status ;;
     log) journalctl -u kagebox-warden.service -n "${2:-40}" --no-pager 2>/dev/null || echo "no logs" ;;
+    test) sudo WARDEN_CONF="$WARDEN_CONF" python3 "$HERE/bridge/egress-warden.py" selftest ;;
     helper) warden_install_helper ;;
     stop)   sudo systemctl disable --now kagebox-warden.service ;;
-    *) echo "usage: kagebox warden {setup|status|log|helper|stop}" ;;
+    *) echo "usage: kagebox warden {setup|test|status|log|helper|stop}" ;;
   esac
 }
 
