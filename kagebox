@@ -246,6 +246,20 @@ EOF
     chmod 600 ~/.hermes/.env
     echo "Hermes backend -> ${BASE} (model ${MODEL}, ctx ${CTX})"
   '
+  # The messaging gateway reads this config at STARTUP, so without a restart the
+  # bot keeps serving the old model while the CLI serves the new one — the same
+  # stale-process trap `bridge restart` exists for. Worse here, because Hermes
+  # then refuses work whose config "drifted", and the only visible symptom is
+  # the bot going quiet.
+  if multipass exec "$VM_NAME" -- bash -lc 'export XDG_RUNTIME_DIR=/run/user/$(id -u); systemctl --user is-active --quiet hermes-gateway.service' 2>/dev/null; then
+    msg "restarting the messaging gateway so it picks up the new model..."
+    multipass exec "$VM_NAME" -- bash -lc 'export XDG_RUNTIME_DIR=/run/user/$(id -u); systemctl --user restart hermes-gateway.service' >/dev/null 2>&1 \
+      && msg "gateway restarted — the bot now uses ${model}" \
+      || warn "could not restart the gateway; the bot may still be on the OLD model (restart it in the VM)"
+    warn "SCHEDULED JOBS created before this change are pinned to the old model and"
+    warn "will refuse to run ('config drifted, skipped to prevent unintended spend')."
+    warn "Re-pin or recreate them if you use them."
+  fi
 }
 
 vm_claude_setup() {
