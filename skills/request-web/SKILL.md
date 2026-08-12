@@ -16,8 +16,22 @@ actual network failure** — most lookups need no approval at all.
 A destination outside the current policy is **refused immediately** — `curl`
 returns `Connection refused` in milliseconds, not a hang. That fast failure is
 the signal: it means "not allowed", not "the site is down" and not "try again".
-Retrying it will fail exactly as fast, forever. Ask for a window instead, or
-tell the user the host is not permitted.
+Retrying it will fail exactly as fast, forever.
+
+**A refusal is not an answer to give the user.** When a host is refused, work
+through these in order, and only report failure if all three fail:
+
+1. **Try an allowed equivalent.** A search endpoint is almost always reachable
+   and its result snippets often answer the question outright. If you wanted a
+   news aggregator, search for the topic instead — the summaries in the results
+   are frequently enough. Do this *first*; it needs no approval and no waiting.
+2. **Ask for a window** for the specific host you need, naming it (below).
+3. **Only then** tell the user, saying which host was refused *and* what you
+   already tried, so they can decide whether to allow it permanently.
+
+Answering "my connection was refused" without having tried a permitted source or
+asked for access is not a useful answer. The user cannot tell from it whether
+the task was impossible or you simply stopped at the first obstacle.
 
 ## When a fetch fails with a network error
 
