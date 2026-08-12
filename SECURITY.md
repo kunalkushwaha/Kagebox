@@ -73,6 +73,15 @@ bound the blast radius.
   — and CDN-fronted names drag their neighbours along. Profiles bound the blast
   radius; they do not make the agent safe to point at hostile input. For that,
   use `sealed` or `./kagebox task`, which forces it.
+- **Blocked traffic is refused, not silently dropped.** A non-allowlisted
+  destination gets a TCP reset (or ICMP admin-prohibited), so the sandbox learns
+  instantly that a host is off-policy instead of hanging until something times
+  out. Dropping would be for hiding from strangers; the process on the other
+  side of this rule is the sandbox we have already told it is contained, so
+  silence buys no secrecy and costs a great deal — a 60-second hang per attempt,
+  a tool that reports "timeout" rather than "refused", and a user who sees an
+  empty reply instead of a reason. Enforcement is identical: the packet still
+  does not leave.
 - **The allowlist is scoped to destination *and port*.** An entry is
   `hostname[:port[,port…]]`, defaulting to 443 and 80 — allowlisting a name does
   not open every port on the addresses it resolves to. This closes the non-web

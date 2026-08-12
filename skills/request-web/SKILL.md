@@ -11,6 +11,14 @@ similar — see what actually works by trying). The model API you are talking to
 right now also always works. **Do not ask for a window before you have hit an
 actual network failure** — most lookups need no approval at all.
 
+## What a blocked host looks like
+
+A destination outside the current policy is **refused immediately** — `curl`
+returns `Connection refused` in milliseconds, not a hang. That fast failure is
+the signal: it means "not allowed", not "the site is down" and not "try again".
+Retrying it will fail exactly as fast, forever. Ask for a window instead, or
+tell the user the host is not permitted.
+
 ## When a fetch fails with a network error
 
 Ask for a time-boxed window, naming the hosts you need:

@@ -188,11 +188,22 @@ table $TABLE {
     # Approved, self-expiring windows (#13).
     ip daddr . tcp dport @grant4 accept
     ip daddr . udp dport @grant4 accept
-    # Non-allowlisted egress is dropped. The set is IPv4-only, so IPv6 NEW
-    # packets never match the accept above and fall through to drop here (#8) —
-    # no v6 path around the v4 allowlist.
-    ct state new limit rate 5/minute log prefix "kagebox egress-drop "
-    counter drop
+    # Non-allowlisted egress is REFUSED, not silently dropped. The set is
+    # IPv4-only, so IPv6 NEW packets never match the accepts above and are
+    # refused here too (#8): no v6 path around the v4 allowlist.
+    #
+    # Why reject rather than drop. Dropping is for hiding a host from strangers;
+    # the process on the other side of this rule is our own sandbox, which we
+    # have already TOLD it is contained. Silence buys no secrecy and costs a
+    # great deal: a blocked connection hangs until something times out, so the
+    # agent burns 60s per attempt, its tool reports a timeout rather than a
+    # refusal, and the human sees an empty reply instead of "that host is not
+    # allowed". Refusing fails fast and legibly, and the agent can react — by
+    # telling you, or by asking for a window. Enforcement is identical either
+    # way: the packet still does not leave.
+    ct state new limit rate 5/minute log prefix "kagebox egress-deny "
+    meta l4proto tcp counter reject with tcp reset
+    counter reject with icmpx type admin-prohibited
   }
 
   # --- guest -> host: only bridge + DNS/DHCP, not every host port (#4) -------
@@ -210,8 +221,12 @@ table $TABLE {
     udp dport { 53, 67 } accept                 # DNS + DHCP (guest is the client)
     tcp dport 53 accept                          # DNS over TCP
     tcp dport $PORT accept                        # the bridge gateway
-    ct state new limit rate 5/minute log prefix "kagebox host-drop "
-    counter drop
+    # Refused rather than dropped, for the same reason as guest_egress: a guest
+    # probing a host port it may not use should learn that immediately instead
+    # of hanging until some timeout fires.
+    ct state new limit rate 5/minute log prefix "kagebox host-deny "
+    meta l4proto tcp counter reject with tcp reset
+    counter reject with icmpx type admin-prohibited
   }
 }
 EOF
