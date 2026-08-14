@@ -74,5 +74,13 @@
       "requests_per_day": 2000,
       "usd_per_day": 5.0
     }
+  },
+  "_services_comment": "Host-side helpers the sandbox may use that are NOT model backends. Same proxying and credential injection as providers, but they never show up in `kagebox backend`. searxng is a local metasearch engine on the host: the guest gets search RESULTS without an API key and without ever talking to a search engine directly. Note it is a low-bandwidth outbound channel by nature \u2014 a query string can carry data \u2014 which is the same residual an allowlisted search endpoint has. See SECURITY.md.",
+  "services": {
+    "searxng": {
+      "route_prefix": "/searxng/",
+      "upstream": "http://127.0.0.1:8888",
+      "strip_prefix": true
+    }
   }
 }

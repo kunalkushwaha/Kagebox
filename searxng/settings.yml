@@ -1,0 +1,28 @@
+# SearXNG for Kagebox — a search backend the sandbox can use without an API key
+# and without a third party seeing the queries as coming from you.
+#
+# It runs on the HOST (which has open internet) and is reached by the VM through
+# the bridge, exactly like Ollama: the sandbox never talks to a search engine
+# directly, and nothing new is allowlisted for the guest.
+use_default_settings: true
+
+server:
+  # Replaced at install time. SearXNG refuses to start with the default secret.
+  secret_key: "6cf5b761bcce4189389252542b6a9d82c251bd0f234adbb3928d1e47583fb586"
+  limiter: false          # no bot-limiting: the only client is our own agent
+  image_proxy: false
+
+search:
+  # JSON is what the agent consumes; html is kept for eyeballing it in a browser.
+  formats:
+    - json
+    - html
+  safe_search: 1          # moderate; the agent is not browsing for pictures
+
+engines:
+  - name: google
+    disabled: false
+  - name: duckduckgo
+    disabled: false
+  - name: wikipedia
+    disabled: false

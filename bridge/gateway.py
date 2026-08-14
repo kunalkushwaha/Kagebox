@@ -311,6 +311,22 @@ def load_routes():
         for hk, hv in (p.get("extra_headers") or {}).items():
             inject[hk] = "default:" + str(hv)  # set only if the client didn't send it
         routes.append((prefix, upstream.rstrip("/"), bool(p.get("strip_prefix", True)), inject))
+    # `services` are host-side helpers the sandbox may use that are NOT model
+    # backends — a local search engine, say. Same proxying and same credential
+    # injection, but they never appear in `kagebox backend` / `providers`, which
+    # would be nonsense for something you cannot run inference against.
+    for name, p in (cfg.get("services") or {}).items():
+        prefix, upstream = p.get("route_prefix"), p.get("upstream")
+        if not prefix or not upstream:
+            continue
+        inject = {}
+        hdr, env = p.get("auth_header"), p.get("auth_env")
+        if hdr and env:
+            scheme = p.get("auth_scheme", "bearer")
+            inject[hdr] = ("bearer-env:" if scheme == "bearer" else "env:") + env
+        for hk, hv in (p.get("extra_headers") or {}).items():
+            inject[hk] = "default:" + str(hv)
+        routes.append((prefix, upstream.rstrip("/"), bool(p.get("strip_prefix", True)), inject))
     return routes
 
 

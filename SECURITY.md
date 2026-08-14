@@ -240,3 +240,25 @@ destinations over v4 and v6, find a credential, and open its own door).
 Please report security issues privately to the maintainer (see the repo's
 contact) rather than opening a public issue. Include reproduction steps and the
 impact. We aim to acknowledge within a few days.
+
+## Host-side services reached through the bridge
+
+`bridge/providers.json` has a `services` section for host helpers the sandbox may
+use that are **not** model backends. They are proxied and credential-injected
+exactly like providers, but never appear in `./kagebox backend`.
+
+- **`searxng` (local metasearch).** Hermes' `web_search` needs a provider
+  (Firecrawl, Tavily, Brave, Exa, SearXNG). Rather than put a third-party API key
+  anywhere, Kagebox can run SearXNG on the host and expose it at `/searxng/`. The
+  guest gets search **results** without an API key, and never talks to a search
+  engine directly — the host makes those requests, so the engines see the host,
+  not the sandbox.
+  **Residual, and it is a real one:** a search query is attacker-controlled text
+  that the host then sends to the open internet, so this is a low-bandwidth
+  outbound channel — a key can be encoded into a query string. That is the same
+  residual as allowlisting a search endpoint directly (which the `research`
+  profile already does), not a new class of exposure, but it means **`searxng`
+  should not be exposed when running `sealed` for untrusted input.** Remove the
+  service entry, or stop the container, for that work.
+  Search returns snippets; reading a full article still means reaching the
+  publisher's domain, which remains a profile or warden decision.
