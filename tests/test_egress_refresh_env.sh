@@ -66,6 +66,22 @@ case "$cron_tmpl" in
   *) check "cron entry routes its stderr somewhere visible" no ;;
 esac
 
+# --- 4b. the cron entry must not depend on the execute bit ------------------
+# host-egress.sh is tracked mode 644. Invoking it as a bare path gives
+# "/bin/sh: Permission denied"; the systemd units go through `env bash`, and
+# cron must too. This one was caught only because check 4 stopped discarding
+# stderr — it had been failing invisibly behind the PATH bug.
+case "$cron_tmpl" in
+  *"bash '\$SELF' refresh"*)
+    check "cron entry invokes the script through bash (no exec-bit dependency)" yes ;;
+  *) check "cron entry invokes the script through bash (no exec-bit dependency)" no ;;
+esac
+
+# The repo must not quietly start depending on the exec bit instead.
+if [ -x "$SCRIPT" ]; then
+  printf '  note  %s\n' "host-egress.sh is executable locally; the cron must still not rely on it"
+fi
+
 # --- 5. a unit exists to fill the set in once DNS is up ---------------------
 REFRESH_UNIT="$ROOT/bridge/kagebox-egress-refresh.service"
 if [ -f "$REFRESH_UNIT" ]; then
