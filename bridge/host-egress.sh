@@ -145,10 +145,16 @@ load_set() {   # (re)populate allow4; surface errors instead of swallowing them
   fi
 }
 
-set_count() {  # (ip,port) pairs actually present in the set, not merely resolved
+set_pairs() {  # (ip,port) pairs actually present in the set, not merely resolved
+  # THE single source of truth for set contents. `nft list set` wraps a long
+  # element list over many lines, so anything matching `elements = { ... }` on
+  # one line silently sees nothing once the set outgrows a line — which is how
+  # `status` came to report "none (bridge + DNS only)" while 25 destinations
+  # were open. Match the pairs themselves, line layout be damned.
   nft list set $TABLE allow4 2>/dev/null \
-    | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3} \. [0-9]+' | sort -u | wc -l
+    | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3} \. [0-9]+' | sort -u
 }
+set_count() { set_pairs | grep -c . ; }   # count and listing must never disagree
 
 # --- best-effort: make ON authoritative over flows opened while OFF ---------
 flush_conntrack() {
@@ -397,9 +403,14 @@ case "$ACTION" in
     ;;
   status)
     if nft list table $TABLE >/dev/null 2>&1; then
-      echo "host egress: ON (enforced on the host, iface '$IFACE', $(set_count) allowlisted destination:port pair(s))"
-      nft list set $TABLE allow4 2>/dev/null | grep -oE 'elements = \{[^}]*\}' \
-        || echo "  allowlisted external destinations: none (bridge + DNS only)"
+      n=$(set_count)
+      echo "host egress: ON (enforced on the host, iface '$IFACE', $n allowlisted destination:port pair(s))"
+      if [ "$n" -gt 0 ]; then
+        echo "  allowlisted external destinations:"
+        set_pairs | sed 's/ \. /:/; s/^/    /'
+      else
+        echo "  allowlisted external destinations: none (bridge + DNS only)"
+      fi
     else
       echo "host egress: OFF (VM has open internet)"
     fi

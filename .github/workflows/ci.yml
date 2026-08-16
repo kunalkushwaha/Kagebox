@@ -59,6 +59,9 @@ jobs:
       - name: Refresh env (the allowlist refresh must survive cron's PATH)
         run: bash tests/test_egress_refresh_env.sh
 
+      - name: Status report (never claim 'none' while destinations are open)
+        run: bash tests/test_egress_status_report.sh
+
       - name: Validate egress rulesets (nft syntax)
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq nftables
