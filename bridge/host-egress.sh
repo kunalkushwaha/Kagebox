@@ -28,6 +28,15 @@
 # Run as root (kagebox invokes it via sudo):
 #   host-egress.sh {on|off|refresh|status}
 set -uo pipefail
+# nft and ip live in /usr/sbin, which is NOT on cron's default PATH
+# (/usr/bin:/bin). Without this the refresh job died at the `command -v nft`
+# check below on every tick, with stderr discarded — so the allowlist silently
+# stopped tracking rotating CDN IPs, and after a reboot (where the boot run
+# resolves nothing because DNS is not up yet) the box stayed sealed forever
+# instead of healing on the next tick. Set it here rather than only in the cron
+# file, so ANY minimal-environment caller is safe.
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}"
+export PATH
 ACTION="${1:-status}"
 IFACE="${BRIDGE_IFACE:-mpqemubr0}"
 PORT="${BRIDGE_PORT:-18080}"
@@ -232,24 +241,37 @@ table $TABLE {
 EOF
 }
 
-UNITFILE="/etc/systemd/system/kagebox-egress.service"
+# Two units, deliberately: one seals early (before multipassd), one fills the
+# allowlist in once DNS works. See kagebox-egress-refresh.service for why.
+UNITS="kagebox-egress.service kagebox-egress-refresh.service"
 
 install_unit() {   # boot-time restore, so containment precedes the VM (#12)
   command -v systemctl >/dev/null 2>&1 || return 0
-  [ -f "$HERE/bridge/kagebox-egress.service" ] || return 0
-  local tmp; tmp="$(mktemp)"
-  sed -e "s|__KAGEBOX_DIR__|$HERE|g" -e "s|__EGRESS_PROFILE__|$PROFILE|g" \
-      "$HERE/bridge/kagebox-egress.service" > "$tmp"
-  if ! cmp -s "$tmp" "$UNITFILE" 2>/dev/null; then
-    mv "$tmp" "$UNITFILE" && chmod 0644 "$UNITFILE"
-    systemctl daemon-reload 2>/dev/null || true
-  else rm -f "$tmp"; fi
-  systemctl enable kagebox-egress.service >/dev/null 2>&1 \
-    || echo "host-egress: WARNING: could not enable kagebox-egress.service — containment will NOT be restored at boot" >&2
+  local unit src dst tmp reloaded=0
+  for unit in $UNITS; do
+    src="$HERE/bridge/$unit"; dst="/etc/systemd/system/$unit"
+    [ -f "$src" ] || continue
+    tmp="$(mktemp)"
+    sed -e "s|__KAGEBOX_DIR__|$HERE|g" -e "s|__EGRESS_PROFILE__|$PROFILE|g" \
+        "$src" > "$tmp"
+    if ! cmp -s "$tmp" "$dst" 2>/dev/null; then
+      mv "$tmp" "$dst" && chmod 0644 "$dst"
+      reloaded=1
+    else rm -f "$tmp"; fi
+  done
+  [ "$reloaded" -eq 1 ] && { systemctl daemon-reload 2>/dev/null || true; }
+  for unit in $UNITS; do
+    [ -f "/etc/systemd/system/$unit" ] || continue
+    systemctl enable "$unit" >/dev/null 2>&1 \
+      || echo "host-egress: WARNING: could not enable $unit — containment will NOT be fully restored at boot" >&2
+  done
 }
 remove_unit() {
   command -v systemctl >/dev/null 2>&1 || return 0
-  systemctl disable kagebox-egress.service >/dev/null 2>&1 || true
+  local unit
+  for unit in $UNITS; do
+    systemctl disable "$unit" >/dev/null 2>&1 || true
+  done
 }
 
 install_cron() {   # host-side refresh so CDN/rotating allowlist IPs don't go stale
@@ -259,7 +281,12 @@ install_cron() {   # host-side refresh so CDN/rotating allowlist IPs don't go st
 # Managed by bridge/host-egress.sh; removed on 'egress off'.
 # EGRESS_PROFILE must be carried here: without it the refresh would rebuild the
 # set from the DEFAULT profile, silently widening a 'sealed' box every 10 min.
-*/10 * * * * root BRIDGE_IFACE=$IFACE BRIDGE_PORT=$PORT EGRESS_ALLOWFILE='$ALLOWFILE' EGRESS_PROFILE='$PROFILE' EGRESS_PROFILE_DIR='$PROFILE_DIR' '$SELF' refresh >/dev/null 2>&1
+# PATH is REQUIRED: cron's default is /usr/bin:/bin, which does not contain
+# nft (/usr/sbin/nft), so the job aborted on every tick with its error thrown
+# away. Do not remove it, and do not send stderr to /dev/null — a security
+# control that fails silently is worse than one that is plainly off.
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+*/10 * * * * root BRIDGE_IFACE=$IFACE BRIDGE_PORT=$PORT EGRESS_ALLOWFILE='$ALLOWFILE' EGRESS_PROFILE='$PROFILE' EGRESS_PROFILE_DIR='$PROFILE_DIR' '$SELF' refresh 2>&1 >/dev/null | logger -t kagebox-egress
 EOF
   chmod 644 "$CRONFILE" 2>/dev/null || true
 }

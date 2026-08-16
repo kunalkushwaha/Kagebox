@@ -1,0 +1,36 @@
+[Unit]
+Description=Kagebox egress allowlist fill-in (re-resolve once DNS is up)
+Documentation=file:__KAGEBOX_DIR__/SECURITY.md
+# kagebox-egress.service deliberately runs very early — before multipassd, so
+# the table is enforcing before the VM can pass a packet. The cost of being that
+# early is that DNS is not up yet, so it resolves NOTHING and the allowlist
+# starts empty (sealed: correct direction, but nothing external works).
+#
+# This unit is the other half: it runs once the resolver is actually usable and
+# fills the set in. Without it the box stays fully sealed until the 10-minute
+# refresh cron happens to fire, which is a confusing "the internet is broken
+# after every reboot" window.
+Requires=kagebox-egress.service
+After=kagebox-egress.service
+Wants=network-online.target
+After=network-online.target nss-lookup.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=BRIDGE_IFACE=mpqemubr0
+Environment=BRIDGE_PORT=18080
+Environment=EGRESS_ALLOWFILE=__KAGEBOX_DIR__/vm/egress-allowlist.txt
+# Stamped in at install time, for the same reason as the boot unit: refreshing
+# without the operator's profile would rebuild the set from the DEFAULT profile
+# and silently widen a sealed box.
+Environment=EGRESS_PROFILE=__EGRESS_PROFILE__
+Environment=EGRESS_PROFILE_DIR=__KAGEBOX_DIR__/vm/profiles
+ExecStart=/usr/bin/env bash __KAGEBOX_DIR__/bridge/host-egress.sh refresh
+# `refresh` exits 0 even when individual hosts fail to resolve (it warns per
+# host), so there is nothing useful for Restart= to key off. Any host still
+# unresolvable at this point is picked up by the 10-minute cron.
+Restart=no
+
+[Install]
+WantedBy=multi-user.target
