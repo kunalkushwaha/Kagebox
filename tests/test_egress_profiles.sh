@@ -82,13 +82,25 @@ ck "boot unit's profile is stamped at install time" \
    "$(grep -c '__EGRESS_PROFILE__' "$ROOT/bridge/host-egress.sh")" "1"
 
 echo
-echo "the nft ruleset heredoc executes as root — no command substitution in it:"
-# The heredoc is deliberately UNQUOTED so $TABLE/$IFACE expand. That also means a
-# backtick or dollar-paren anywhere inside it — including in a COMMENT — is run
-# by the shell, as root, during `egress on`. This shipped once: prose containing
-# 'flags timeout' in backticks made sudo run `flags` as a command.
-subs="$(awk '/nft -f - <<EOF/{f=1} f{ if ($0 ~ /`/ || $0 ~ /\$\(/) print NR": "$0 } /^EOF$/{if(f) exit}' \
-        "$ROOT/bridge/host-egress.sh")"
+echo "EVERY unquoted heredoc executes as root — no command substitution in any:"
+# These heredocs are deliberately UNQUOTED so $TABLE/$IFACE/$SELF expand. That
+# also means a backtick or dollar-paren anywhere inside one — including in a
+# COMMENT — is run by the shell, as root, during `egress on`.
+#
+# This has now shipped TWICE. First: prose containing 'flags timeout' in
+# backticks made sudo run `flags` as a command. Second: a comment added to the
+# install_cron heredoc explaining that the job runs "through `bash`" made sudo
+# run bash — dropping the operator into an interactive root shell on the host,
+# and corrupting the cron file it was meant to write.
+#
+# The first fix pinned only the `nft -f - <<EOF` heredoc, which is exactly why
+# the second one got through. Scan ALL of them: any `<<EOF` whose delimiter is
+# not single-quoted. If you need prose with backticks, quote the delimiter.
+subs="$(awk '
+  /<<EOF/ && !/<<'"'"'EOF'"'"'/ { f=1; next }
+  f && /^EOF$/                  { f=0; next }
+  f && ($0 ~ /`/ || $0 ~ /\$\(/) { print NR": "$0 }
+' "$ROOT/bridge/host-egress.sh")"
 if [ -z "$subs" ]; then
   printf '  [ok]   no backticks or $(...) inside the root-executed heredoc\n'; pass=$((pass+1))
 else

@@ -291,10 +291,12 @@ install_cron() {   # host-side refresh so CDN/rotating allowlist IPs don't go st
 # nft (/usr/sbin/nft), so the job aborted on every tick with its error thrown
 # away. Do not remove it, and do not send stderr to /dev/null — a security
 # control that fails silently is worse than one that is plainly off.
-# Invoke through `bash` rather than as a bare path: this script is tracked
+# The job runs through bash rather than as a bare path: this script is tracked
 # mode 644, so executing it directly fails with "Permission denied". The
-# systemd units already call it as `env bash <path>`; match them, and stay
+# systemd units invoke it the same way (env bash PATH); match them, and stay
 # correct on a noexec mount or a fresh clone regardless of the exec bit.
+# NOTE TO EDITORS: this heredoc is UNQUOTED and written as root. Never put a
+# backtick or a dollar-paren in it, not even inside a comment — it executes.
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 */10 * * * * root BRIDGE_IFACE=$IFACE BRIDGE_PORT=$PORT EGRESS_ALLOWFILE='$ALLOWFILE' EGRESS_PROFILE='$PROFILE' EGRESS_PROFILE_DIR='$PROFILE_DIR' bash '$SELF' refresh 2>&1 >/dev/null | logger -t kagebox-egress
 EOF
