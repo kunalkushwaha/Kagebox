@@ -19,10 +19,19 @@
 #
 # Add sites the agent legitimately needs, then: ./kagebox egress on
 # Entries are resolved to IPs and re-resolved every ~10 min on the host, so
-# rotating IPs keep working — but CDN-fronted hosts share IPs with unrelated
-# sites, so allowlisting one effectively allows others on the same front end.
-# Port-scoping does NOT fix that (the neighbours are on :443 too); what it
-# closes is the non-web surface — SSH, databases, admin panels — on those IPs.
+# slowly-rotating IPs keep working — but CDN-fronted hosts share IPs with
+# unrelated sites, so allowlisting one effectively allows others on the same
+# front end. Port-scoping does NOT fix that (the neighbours are on :443 too);
+# what it closes is the non-web surface — SSH, databases, admin panels.
+#
+# ROTATION LIMIT: some names rotate faster than any refresh interval can track.
+# Google is the clearest case — news.google.com was measured answering in
+# 142.250.21.0/24 and, twenty minutes later, 142.251.23.0/24. By the time the
+# set is loaded the guest is already dialling different addresses. Such a host
+# CANNOT be allowlisted by IP; it fails closed, which is safe but useless.
+# Pinning it would mean allowing a whole provider prefix — far too wide.
+# For those, put the fetch on the HOST instead (see the searxng service in
+# bridge/providers.json) so no guest allowlist entry is needed at all.
 #
 # --- examples (uncomment what you trust) ---
 # api.telegram.org
