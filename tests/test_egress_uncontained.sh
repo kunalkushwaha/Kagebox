@@ -31,7 +31,7 @@ ck() { # name  actual  expected
 # --- 1. parsing: who may be exempted -----------------------------------------
 {
   echo 'die(){ echo "die: $*" >&2; return 1; }'
-  echo 'SUBNET="10.85.206.0/24"'
+  echo 'SUBNET="10.99.0.0/24"'
   echo 'UNCONTAINEDFILE="'"$WORK"'/uncontained.txt"'
   sed -n '/^uncontained_addrs() {/,/^}/p' "$ROOT/bridge/host-egress.sh"
 } > "$WORK/lib.sh"
@@ -42,12 +42,12 @@ source "$WORK/lib.sh"
 addrs() { printf '%s\n' "$1" > "$WORK/uncontained.txt"; uncontained_addrs 2>/dev/null; }
 
 echo "who may be exempted:"
-ck "a bare in-subnet IPv4 is accepted"   "$(addrs '10.85.206.174')"          "10.85.206.174"
+ck "a bare in-subnet IPv4 is accepted"   "$(addrs '10.99.0.50')"              "10.99.0.50"
 ck "comments and blanks are ignored"     "$(addrs '# note
-10.85.206.174   # browserai-1')"                                             "10.85.206.174"
-ck "a CIDR is refused (would exempt future leases)" "$(addrs '10.85.206.0/24' | grep -c .)" "0"
-ck "a hostname is refused (no name decides this)"   "$(addrs 'browserai-1.local' | grep -c .)" "0"
-ck "a malformed quad is refused"                    "$(addrs '10.85.206' | grep -c .)"       "0"
+10.99.0.50   # a browser VM')"                                                "10.99.0.50"
+ck "a CIDR is refused (would exempt future leases)" "$(addrs '10.99.0.0/24' | grep -c .)" "0"
+ck "a hostname is refused (no name decides this)"   "$(addrs 'some-vm.local' | grep -c .)" "0"
+ck "a malformed quad is refused"                    "$(addrs '10.99.0' | grep -c .)"       "0"
 ck "an address off our bridge is refused"           "$(addrs '8.8.8.8' | grep -c .)"         "0"
 ck "the loopback trick is refused"                  "$(addrs '127.0.0.1' | grep -c .)"       "0"
 ck "an empty file exempts nobody"                   "$(addrs '' | grep -c .)"                "0"
