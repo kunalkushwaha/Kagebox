@@ -62,6 +62,9 @@ jobs:
       - name: Status report (never claim 'none' while destinations are open)
         run: bash tests/test_egress_status_report.sh
 
+      - name: Uncontained guests (an exemption is narrow, explicit, and cannot pivot)
+        run: bash tests/test_egress_uncontained.sh
+
       - name: Validate egress rulesets (nft syntax)
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq nftables
@@ -74,6 +77,13 @@ jobs:
               bash vm/egress-apply.sh render | sudo nft -c -f -
           done
           echo "guest egress ruleset OK (v6 gateway present and absent)"
+          # The HOST table is the authoritative control and had no such check.
+          # It is built by an unquoted heredoc, where a typo does not produce a
+          # broken rule — it produces NO TABLE, i.e. the box fails open at the
+          # moment someone believes they just closed it.
+          BRIDGE_IFACE=mpqemubr0 BRIDGE_PORT=18080 \
+            bash bridge/host-egress.sh render | sudo nft -c -f -
+          echo "host egress ruleset OK"
 
       - name: ShellCheck (informational)
         continue-on-error: true

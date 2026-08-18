@@ -43,21 +43,35 @@ PORT="${BRIDGE_PORT:-18080}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 ALLOWFILE="${EGRESS_ALLOWFILE:-$HERE/vm/egress-allowlist.txt}"
+# Guests listed here are EXEMPT from the allowlist and reach the open internet.
+# For sandboxes that do their containment in-guest (a browser VM, say) and would
+# otherwise need dozens of rotating CDN domains allowlisted to work at all.
+UNCONTAINEDFILE="${EGRESS_UNCONTAINED:-$HERE/vm/egress-uncontained.txt}"
 TABLE="inet kagebox_egress"                 # dedicated table — never share/collide
 CRONFILE="/etc/cron.d/kagebox-egress"
 
 die() { echo "host-egress: $*" >&2; exit 1; }
 
-[ "$(id -u)" -eq 0 ] || die "must run as root (use: sudo $0 $ACTION)"
-command -v nft >/dev/null 2>&1 || die "nftables (nft) not installed on host"
+# 'render' only prints the ruleset — no netlink, no policy change — so it is
+# the one action that must work unprivileged, otherwise CI cannot check the
+# table it would load.
+if [ "$ACTION" != "render" ]; then
+  [ "$(id -u)" -eq 0 ] || die "must run as root (use: sudo $0 $ACTION)"
+  command -v nft >/dev/null 2>&1 || die "nftables (nft) not installed on host"
+fi
 # These values are interpolated into the ruleset; validate them so a bad
 # kagebox.env can't produce a parse error that leaves us with no table.
 case "$PORT"  in ''|*[!0-9]*)          die "BRIDGE_PORT must be numeric (got '$PORT')";; esac
 case "$IFACE" in ''|*[!A-Za-z0-9._-]*) die "BRIDGE_IFACE has invalid characters (got '$IFACE')";; esac
 
 GW="$(ip -4 -o addr show dev "$IFACE" 2>/dev/null | awk '{print $4; exit}' | cut -d/ -f1)"
+# The bridge network in CIDR form. An uncontained guest gets the open internet,
+# but NOT its neighbours on this bridge and NOT the host — see guest_egress.
+SUBNET="$(ip -4 -o addr show dev "$IFACE" 2>/dev/null | awk '{print $4; exit}' \
+          | { read -r cidr; [ -n "$cidr" ] && python3 -c 'import ipaddress,sys; print(ipaddress.ip_network(sys.argv[1], strict=False))' "$cidr" 2>/dev/null; })"
+[ -n "$SUBNET" ] || SUBNET="127.0.0.0/8"   # never empty: an empty match would widen the rule
 # Scratch variables used by the `grant` action (this script runs with `set -u`).
-secs=""; elems=""; granted=""; spec=""; gh=""; gp=""; gips=""; gip=""; gport=""
+secs=""; elems=""; granted=""; spec=""; gh=""; gp=""; gips=""; gip=""; gport=""; u=""
 
 # --- allowlist resolution --------------------------------------------------
 # Resolve via the SAME resolver the guest uses (multipass dnsmasq on the bridge
@@ -145,6 +159,49 @@ load_set() {   # (re)populate allow4; surface errors instead of swallowing them
   fi
 }
 
+# --- uncontained guests -----------------------------------------------------
+# One bare IPv4 per line, comments and blanks ignored. NOT hostnames: this names
+# a guest on our own bridge, whose address we hand out by DHCP, so there is
+# nothing to resolve and no reason to let a name lookup decide who is exempt.
+uncontained_addrs() {
+  [ -f "$UNCONTAINEDFILE" ] || return 0
+  local line ip
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%%#*}"
+    ip="$(printf '%s' "$line" | tr -d '[:space:]')"
+    [ -n "$ip" ] || continue
+    # Strict dotted-quad only. No CIDR: a mask here would exempt a RANGE of the
+    # bridge, and the next guest to take a lease inside that range would inherit
+    # an exemption nobody wrote down.
+    if ! printf '%s' "$ip" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
+      echo "host-egress: WARNING: ignoring uncontained entry (want a bare IPv4 address, got: $ip)" >&2
+      continue
+    fi
+    # Must actually be on our bridge. An address outside it could never match as
+    # a source anyway, so accepting it silently would be a rule that reads like
+    # policy and enforces nothing.
+    if ! python3 -c 'import ipaddress,sys; sys.exit(0 if ipaddress.ip_address(sys.argv[1]) in ipaddress.ip_network(sys.argv[2]) else 1)' "$ip" "$SUBNET" 2>/dev/null; then
+      echo "host-egress: WARNING: ignoring uncontained entry $ip — not on bridge $SUBNET" >&2
+      continue
+    fi
+    echo "$ip"
+  done < "$UNCONTAINEDFILE" | sort -u
+}
+
+load_uncontained() {
+  local addrs; addrs=$(uncontained_addrs)
+  nft flush set $TABLE uncontained4 || die "could not flush uncontained4 set (is the table loaded?)"
+  if [ -n "$addrs" ]; then
+    nft add element $TABLE uncontained4 "{ $(echo "$addrs" | paste -sd, -) }" \
+      || echo "host-egress: WARNING: some uncontained entries failed to load into the set" >&2
+  fi
+}
+
+uncontained_set() {  # what is ACTUALLY exempt, read back from the kernel
+  nft list set $TABLE uncontained4 2>/dev/null \
+    | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | sort -u
+}
+
 set_pairs() {  # (ip,port) pairs actually present in the set, not merely resolved
   # THE single source of truth for set contents. `nft list set` wraps a long
   # element list over many lines, so anything matching `elements = { ... }` on
@@ -170,7 +227,17 @@ build_table() {
   # ONE atomic nft transaction: create-if-absent, delete, recreate. If any line
   # fails, nft rolls the WHOLE thing back and the currently-enforcing table is
   # left intact — a load failure can never leave us table-less (fail-open).
-  nft -f - <<EOF
+  render_table | nft -f -
+}
+
+# The ruleset as text, without applying it. Exists so CI can syntax-check what
+# 'on' would load: this table is assembled by an UNQUOTED heredoc and a typo in
+# it is not a broken rule, it is NO TABLE AT ALL — the box fails open at exactly
+# the moment someone believes they just closed it. The guest-side ruleset has
+# had this check since the start; the host side is the authoritative one and
+# went without.
+render_table() {
+  cat <<EOF
 add table $TABLE
 delete table $TABLE
 table $TABLE {
@@ -188,6 +255,14 @@ table $TABLE {
   # block free of backticks and dollar-paren. A test asserts it.
   set grant4 { type ipv4_addr . inet_service; flags timeout; }
 
+  # Guests that are deliberately NOT contained by the allowlist. A domain
+  # allowlist cannot express "browse the web": X, Reddit and LinkedIn each pull
+  # from a dozen rotating CDN hosts, so a VM whose job is browsing would need
+  # the allowlist opened until it meant nothing. Such a VM contains itself from
+  # the inside instead, and is listed here so the exemption is explicit,
+  # auditable, and visible in status rather than achieved by turning egress off.
+  set uncontained4 { type ipv4_addr; }
+
   # --- guest -> beyond-host (routed/NAT'd): the containment control ---------
   chain forward {
     type filter hook forward priority 10; policy accept;
@@ -195,6 +270,14 @@ table $TABLE {
   }
   chain guest_egress {
     ct state established,related accept
+    # Uncontained guests: the open internet, but NOT this bridge. Denying the
+    # local subnet FIRST is the whole point of the pair — an exempt guest must
+    # not become a pivot onto its contained neighbours. Without this rule a
+    # browser VM driven by whatever it just read on a web page could open a
+    # socket straight to the sandbox next door, which the allowlist was built
+    # to prevent. Host services are handled separately, in guest_host.
+    ip saddr @uncontained4 ip daddr $SUBNET reject with icmpx type admin-prohibited
+    ip saddr @uncontained4 accept
     # Allowlisted DESTINATION AND PORT, not merely destination (#14). UDP is
     # matched too so QUIC/HTTP-3 to an allowlisted :443 keeps working; anything
     # on a port that was not asked for falls through to the drop below.
@@ -235,7 +318,12 @@ table $TABLE {
                   nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit } accept
     udp dport { 53, 67 } accept                 # DNS + DHCP (guest is the client)
     tcp dport 53 accept                          # DNS over TCP
-    tcp dport $PORT accept                        # the bridge gateway
+    # The bridge gateway injects HOST credentials into upstream requests and
+    # does not authenticate its clients, so reaching it is equivalent to holding
+    # the keys. A contained guest may: that is the trade the allowlist already
+    # priced in. An uncontained one may not — it has the whole internet to fetch
+    # from and no reason to borrow your API keys to do it.
+    ip saddr != @uncontained4 tcp dport $PORT accept        # the bridge gateway
     # Refused rather than dropped, for the same reason as guest_egress: a guest
     # probing a host port it may not use should learn that immediately instead
     # of hanging until some timeout fires.
@@ -298,7 +386,7 @@ install_cron() {   # host-side refresh so CDN/rotating allowlist IPs don't go st
 # NOTE TO EDITORS: this heredoc is UNQUOTED and written as root. Never put a
 # backtick or a dollar-paren in it, not even inside a comment — it executes.
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-*/10 * * * * root BRIDGE_IFACE=$IFACE BRIDGE_PORT=$PORT EGRESS_ALLOWFILE='$ALLOWFILE' EGRESS_PROFILE='$PROFILE' EGRESS_PROFILE_DIR='$PROFILE_DIR' bash '$SELF' refresh 2>&1 >/dev/null | logger -t kagebox-egress
+*/10 * * * * root BRIDGE_IFACE=$IFACE BRIDGE_PORT=$PORT EGRESS_ALLOWFILE='$ALLOWFILE' EGRESS_UNCONTAINED='$UNCONTAINEDFILE' EGRESS_PROFILE='$PROFILE' EGRESS_PROFILE_DIR='$PROFILE_DIR' bash '$SELF' refresh 2>&1 >/dev/null | logger -t kagebox-egress
 EOF
   chmod 644 "$CRONFILE" 2>/dev/null || true
 }
@@ -310,10 +398,13 @@ case "$ACTION" in
       || die "bridge interface '$IFACE' does not exist — refusing to claim enforcement (set BRIDGE_IFACE correctly). Nothing changed."
     build_table || die "nft failed to load the egress ruleset — the previous state is unchanged (NOT enforcing). Nothing claimed."
     load_set
+    load_uncontained
     flush_conntrack
     install_unit
     install_cron
     echo "host egress ON — iface '$IFACE' may reach: bridge (tcp/$PORT) + DNS/DHCP on the host, and $(set_count) allowlisted destination:port pair(s) from $(basename "$ALLOWFILE"). All other egress DROPPED (host-enforced; the guest cannot remove it)."
+    u=$(uncontained_set | grep -c .)
+    [ "$u" -gt 0 ] && echo "host egress: NOTE: $u guest(s) EXEMPT from the allowlist (open internet) per $(basename "$UNCONTAINEDFILE"): $(uncontained_set | paste -sd' ' -)"
     ;;
   grant)
     # grant <seconds> <host[:ports]> [host[:ports]...]   (#13)
@@ -381,6 +472,10 @@ case "$ACTION" in
     # towards "too closed" at boot is the correct direction.
     build_table || die "nft failed to load the egress ruleset at boot — NOT enforcing"
     load_set || true
+    # Exemptions are literal addresses, not names, so unlike the allowlist they
+    # load correctly at boot even with no DNS. An uncontained guest is therefore
+    # uncontained from the first packet, exactly as it is after 'on'.
+    load_uncontained || true
     echo "host egress: restored at boot (iface '$IFACE', $(set_count) allowlisted destination:port pair(s); the set fills in once DNS is up)"
     ;;
   refresh)
@@ -396,12 +491,18 @@ case "$ACTION" in
       build_table || exit 0                                # re-assert; retry next tick on failure
     fi
     load_set
+    load_uncontained
     ;;
   off)
     nft list table $TABLE >/dev/null 2>&1 && nft delete table $TABLE
     remove_unit
     remove_cron
     echo "host egress OFF — VM has open internet again."
+    ;;
+  render)
+    # Print the ruleset instead of loading it. Applies no policy and needs no
+    # root, so CI can pipe it to 'nft -c -f -'.
+    render_table
     ;;
   status)
     if nft list table $TABLE >/dev/null 2>&1; then
@@ -412,6 +513,17 @@ case "$ACTION" in
         set_pairs | sed 's/ \. /:/; s/^/    /'
       else
         echo "  allowlisted external destinations: none (bridge + DNS only)"
+      fi
+      # Report exemptions even when there are none. "0 exempt" is a fact the
+      # operator wants confirmed; silence would leave them guessing whether the
+      # feature is off or merely unused — the same ambiguity that let status
+      # once claim "none" while 25 destinations were open.
+      u=$(uncontained_set | grep -c .)
+      if [ "$u" -gt 0 ]; then
+        echo "  UNCONTAINED guests (allowlist does NOT apply; open internet, no bridge gateway):"
+        uncontained_set | sed 's/^/    /'
+      else
+        echo "  uncontained guests: none (every guest on this bridge is contained)"
       fi
     else
       echo "host egress: OFF (VM has open internet)"

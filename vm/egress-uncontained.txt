@@ -1,0 +1,50 @@
+# Guests that are deliberately NOT contained by the egress allowlist.
+# =============================================================================
+# One bare IPv4 address per line. Blank lines and #-comments are ignored.
+#
+# WHY THIS EXISTS
+# ---------------
+# The allowlist names destinations. That works for a sandbox with a known,
+# small set of endpoints — a search API, an arXiv mirror, Telegram. It does not
+# work for a VM whose whole job is to browse: X, Reddit and LinkedIn each pull
+# from a dozen rotating CDN hosts (twimg.com, redditstatic.com, licdn.com, ...),
+# and the entries are resolved to IPs that rotate underneath you. Allowlisting
+# your way to "the web" ends with an allowlist that means nothing, which is
+# worse than an honest exemption: it reads like containment and is not.
+#
+# So such a VM contains itself from the INSIDE — its own in-guest nftables cage
+# blocks RFC1918/link-local/host ranges, and an in-app allowlist decides which
+# sites the agent may navigate to — and gets listed here so that the exemption
+# is explicit, auditable, and visible in `kagebox egress status`.
+#
+# WHAT AN EXEMPT GUEST GETS, AND WHAT IT STILL DOES NOT
+# -----------------------------------------------------
+#   YES  the open IPv4 internet, any destination, any port
+#   NO   this bridge — its contained neighbours are still unreachable, so an
+#        exempt guest cannot become a pivot onto the sandbox next door
+#   NO   the bridge gateway (tcp/18080). That gateway injects HOST credentials
+#        into upstream requests and does not authenticate its clients, so
+#        reaching it is equivalent to holding your API keys. A contained guest
+#        may use it — that is the trade the allowlist already prices in. A guest
+#        with the whole internet has no reason to borrow your keys as well.
+#   NO   IPv6 egress. The allowlist sets are v4-only and v6 is refused for every
+#        guest; exemption does not change that. Nothing in practice needs it.
+#
+# THE ADDRESS MUST BE STABLE
+# --------------------------
+# This names an address, not a VM. Multipass leases by MAC so a guest normally
+# keeps its address across restarts, but CONFIRM it before relying on this:
+#
+#     multipass list
+#
+# If the guest's lease changes, the exemption silently stops applying (it will
+# be contained again, and `egress status` will show it gone). Entries outside
+# the bridge subnet are refused with a warning rather than loaded, because an
+# address that can never match as a source is a rule that enforces nothing.
+#
+# Take an exemption back by deleting the line and running:
+#
+#     sudo ./kagebox egress on
+#
+# This file ships EMPTY. Every guest on the bridge is contained by default;
+# nothing is exempt until you write it here yourself.
